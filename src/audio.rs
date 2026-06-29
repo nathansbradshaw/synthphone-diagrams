@@ -16,6 +16,9 @@ pub struct DspParams {
     pub carrier_waveform: Waveform,
     /// When set, DSP effects are bypassed until this instant.
     pub bypass_until: Option<std::time::Instant>,
+    /// Vocoder mode only: drive the carrier frequency from the loaded MIDI
+    /// timeline instead of the static `carrier_freq`.
+    pub midi_driven_carrier: bool,
 }
 
 // ── Audio data ────────────────────────────────────────────────────────────────

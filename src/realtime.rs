@@ -137,6 +137,9 @@ struct FrameState {
     acc_in: [f32; HALF],
     frame_count: u32,
     hann: [f32; N],
+    /// Last nonzero MIDI-driven carrier frequency — held across rests so the
+    /// carrier doesn't drop out between notes (gate-hold, same as the phone).
+    last_midi_carrier_hz: f32,
 }
 
 impl FrameState {
@@ -150,6 +153,7 @@ impl FrameState {
             acc_in: [0.0; HALF],
             frame_count: 0,
             hann: *Fft1024::get_hann_window(),
+            last_midi_carrier_hz: 0.0,
         }
     }
 
@@ -162,7 +166,20 @@ impl FrameState {
         midi: &Option<Arc<MidiTimeline>>,
         bypassed: bool,
     ) -> ([f32; N], [f32; HALF], [f32; HALF], [f32; HALF]) {
-        self.carrier_osc.set_freq(cur.carrier_freq);
+        // Resolve carrier frequency: either the manual slider, or — in
+        // MIDI-driven vocoder mode — the current MIDI note (held across rests).
+        let carrier_freq = if cur.midi_driven_carrier {
+            if let Some(timeline) = midi {
+                let f = timeline.freq_at(play_position);
+                if f > 0.0 {
+                    self.last_midi_carrier_hz = f;
+                }
+            }
+            if self.last_midi_carrier_hz > 0.0 { self.last_midi_carrier_hz } else { cur.carrier_freq }
+        } else {
+            cur.carrier_freq
+        };
+        self.carrier_osc.set_freq(carrier_freq);
         self.carrier_osc.set_waveform(cur.carrier_waveform);
 
         let mut block = *raw_block;

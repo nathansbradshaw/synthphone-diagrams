@@ -52,6 +52,7 @@ const BYPASS_COLOR: Color = Color { r: 1.0, g: 0.67, b: 0.0, a: 1.0 };
 enum AppMode {
     PitchCorrection,
     Vocode,
+    VocoderHarmony,
     Harmony,
     Dry,
 }
@@ -61,15 +62,17 @@ impl fmt::Display for AppMode {
         match self {
             AppMode::PitchCorrection => write!(f, "Pitch Correction"),
             AppMode::Vocode => write!(f, "Vocoder"),
+            AppMode::VocoderHarmony => write!(f, "Vocoder Harmony (MIDI)"),
             AppMode::Harmony => write!(f, "Harmony (MIDI)"),
             AppMode::Dry => write!(f, "Dry / Formant"),
         }
     }
 }
 
-const APP_MODES: [AppMode; 4] = [
+const APP_MODES: [AppMode; 5] = [
     AppMode::PitchCorrection,
     AppMode::Vocode,
+    AppMode::VocoderHarmony,
     AppMode::Harmony,
     AppMode::Dry,
 ];
@@ -116,21 +119,6 @@ impl From<CarrierWave> for Waveform {
 const CARRIER_WAVES: [CarrierWave; 4] = [
     CarrierWave::Sine, CarrierWave::Saw, CarrierWave::Square, CarrierWave::Triangle,
 ];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FormantMode { Off, Male, Female }
-
-impl fmt::Display for FormantMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            FormantMode::Off => write!(f, "Off"),
-            FormantMode::Male => write!(f, "Male (↓)"),
-            FormantMode::Female => write!(f, "Female (↑)"),
-        }
-    }
-}
-
-const FORMANT_MODES: [FormantMode; 3] = [FormantMode::Off, FormantMode::Male, FormantMode::Female];
 
 // ── Entry point ───────────────────────────────────────────────────────────────
 
@@ -202,8 +190,8 @@ struct App {
     octave: f32,
     carrier_wave: CarrierWave,
     carrier_freq: f32,
-    formant_mode: FormantMode,
-    formant_ratio: f32,
+    /// Formant shift in semitones, -24..=24. 0 = neutral/off.
+    formant_shift: f32,
     bit_depth: f32,
     sample_rate_div: f32,
     harmony_strength: f32,
@@ -235,8 +223,7 @@ enum Message {
     CarrierWaveChanged(CarrierWave),
     CarrierFreqChanged(f32),
     // Formant shift
-    FormantModeChanged(FormantMode),
-    FormantRatioChanged(f32),
+    FormantShiftChanged(f32),
     // Bitcrusher
     BitDepthChanged(f32),
     SampleRateDivChanged(f32),
@@ -257,6 +244,7 @@ impl App {
             carrier_freq: 110.0,
             carrier_waveform: Waveform::Saw,
             bypass_until: None,
+            midi_driven_carrier: false,
         }));
         (
             Self {
@@ -294,8 +282,7 @@ impl App {
                 octave: 2.0,
                 carrier_wave: CarrierWave::Saw,
                 carrier_freq: 110.0,
-                formant_mode: FormantMode::Off,
-                formant_ratio: 1.0,
+                formant_shift: 0.0,
                 bit_depth: 16.0,
                 sample_rate_div: 1.0,
                 harmony_strength: 0.8,
@@ -330,6 +317,7 @@ impl App {
                 ProcessingMode::PitchControl
             }
             AppMode::Vocode => ProcessingMode::Vocode,
+            AppMode::VocoderHarmony => ProcessingMode::Vocode,
             AppMode::Harmony => {
                 config.pitch_correction_strength = self.harmony_strength;
                 settings.octave = self.harmony_octave.round() as i8;
@@ -341,13 +329,18 @@ impl App {
             }
         };
 
-        settings.formant = match self.formant_mode {
-            FormantMode::Off => 0,
-            FormantMode::Male => 1,
-            FormantMode::Female => 2,
-        };
-        settings.formant_male_ratio = self.formant_ratio.min(1.0);
-        settings.formant_female_ratio = self.formant_ratio.max(1.0);
+        // Single linear-feeling slider in semitones, converted to a ratio.
+        // ratio = 2^(shift/12) so equal slider steps feel like equal pitch steps.
+        let ratio = 2.0_f32.powf(self.formant_shift / 12.0);
+        if self.formant_shift.abs() < 0.05 {
+            settings.formant = 0;
+        } else if self.formant_shift < 0.0 {
+            settings.formant = 1;
+            settings.formant_male_ratio = ratio;
+        } else {
+            settings.formant = 2;
+            settings.formant_female_ratio = ratio;
+        }
 
         DspParams {
             config,
@@ -357,6 +350,7 @@ impl App {
             carrier_freq: self.carrier_freq,
             carrier_waveform: self.carrier_wave.into(),
             bypass_until: self.bypass_until,
+            midi_driven_carrier: matches!(self.app_mode, AppMode::VocoderHarmony),
         }
     }
 
@@ -676,8 +670,7 @@ impl App {
             Message::OctaveChanged(v) => { self.octave = v; self.push_params(); }
             Message::CarrierWaveChanged(w) => { self.carrier_wave = w; self.push_params(); }
             Message::CarrierFreqChanged(v) => { self.carrier_freq = v; self.push_params(); }
-            Message::FormantModeChanged(m) => { self.formant_mode = m; self.push_params(); }
-            Message::FormantRatioChanged(v) => { self.formant_ratio = v; self.push_params(); }
+            Message::FormantShiftChanged(v) => { self.formant_shift = v; self.push_params(); }
             Message::BitDepthChanged(v) => { self.bit_depth = v; self.push_params(); }
             Message::SampleRateDivChanged(v) => { self.sample_rate_div = v; self.push_params(); }
             Message::HarmonyStrengthChanged(v) => { self.harmony_strength = v; self.push_params(); }
@@ -716,10 +709,21 @@ impl App {
 
             AppMode::Vocode => column![
                 text("Carrier Waveform").size(13),
-                pick_list(&CARRIER_WAVES[..], Some(self.carrier_wave), Message::CarrierWaveChanged),
+                row(CARRIER_WAVES.iter().map(|&w| wave_icon_button(w, w == self.carrier_wave))).spacing(6),
                 text("Carrier Freq (Hz)").size(13),
                 slider(50.0_f32..=2000.0_f32, self.carrier_freq, Message::CarrierFreqChanged).step(1.0_f32),
                 text(format!("{:.0} Hz", self.carrier_freq)).size(12),
+            ].spacing(6).into(),
+
+            AppMode::VocoderHarmony => column![
+                text("Carrier Waveform").size(13),
+                row(CARRIER_WAVES.iter().map(|&w| wave_icon_button(w, w == self.carrier_wave))).spacing(6),
+                text("MIDI file").size(13),
+                text(self.midi_filename.as_deref().unwrap_or("(none)")).size(11),
+                button("Open MIDI…").on_press(Message::OpenMidi),
+                text("Fallback Carrier Freq (Hz)").size(13),
+                slider(50.0_f32..=2000.0_f32, self.carrier_freq, Message::CarrierFreqChanged).step(1.0_f32),
+                text(format!("{:.0} Hz (used before first MIDI note)", self.carrier_freq)).size(11),
             ].spacing(6).into(),
 
             AppMode::Harmony => column![
@@ -745,9 +749,8 @@ impl App {
         let effects_controls = column![
             text("── Effects ──").size(12),
             text("Formant").size(13),
-            pick_list(&FORMANT_MODES[..], Some(self.formant_mode), Message::FormantModeChanged),
-            slider(0.25_f32..=4.0_f32, self.formant_ratio, Message::FormantRatioChanged).step(0.05_f32),
-            text(format!("Ratio {:.2}×", self.formant_ratio)).size(12),
+            slider(-24.0_f32..=24.0_f32, self.formant_shift, Message::FormantShiftChanged).step(0.5_f32),
+            text(formant_label(self.formant_shift)).size(12),
             text("Bit Depth").size(13),
             slider(1.0_f32..=16.0_f32, self.bit_depth, Message::BitDepthChanged).step(1.0_f32),
             text(format!("{} bit", self.bit_depth as i8)).size(12),
@@ -916,6 +919,17 @@ impl App {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+fn formant_label(shift: f32) -> String {
+    let ratio = 2.0_f32.powf(shift / 12.0);
+    if shift.abs() < 0.05 {
+        "Neutral (off)".to_string()
+    } else if shift < 0.0 {
+        format!("Male  {:+.1} st  ({:.2}×)", shift, ratio)
+    } else {
+        format!("Female  {:+.1} st  ({:.2}×)", shift, ratio)
+    }
+}
+
 fn fmt_time(samples: usize, sample_rate: u32) -> String {
     let sr = sample_rate.max(1) as usize;
     let secs = samples / sr;
@@ -1031,6 +1045,83 @@ impl canvas::Program<Message> for WaveformView {
         }
         vec![frame.into_geometry()]
     }
+}
+
+// ── Carrier waveform icon button ──────────────────────────────────────────────
+
+struct WaveIcon {
+    wave: CarrierWave,
+    selected: bool,
+}
+
+impl canvas::Program<Message> for WaveIcon {
+    type State = ();
+    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: iced::Rectangle, _: mouse::Cursor)
+        -> Vec<canvas::Geometry<Renderer>>
+    {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let bg = if self.selected { Color { r: 0.16, g: 0.22, b: 0.30, a: 1.0 } } else { PANEL };
+        frame.fill_rectangle(Point::ORIGIN, bounds.size(), bg);
+
+        let w = bounds.width;
+        let h = bounds.height;
+        let cy = h / 2.0;
+        let pad = w * 0.18;
+        let amp = h * 0.32;
+        let color = if self.selected { GREEN } else { DIM };
+
+        let path = Path::new(|b| {
+            let steps = 48;
+            match self.wave {
+                CarrierWave::Sine => {
+                    for i in 0..=steps {
+                        let t = i as f32 / steps as f32;
+                        let x = pad + t * (w - 2.0 * pad);
+                        let y = cy - (t * std::f32::consts::TAU).sin() * amp;
+                        if i == 0 { b.move_to(Point::new(x, y)); } else { b.line_to(Point::new(x, y)); }
+                    }
+                }
+                CarrierWave::Saw => {
+                    let x0 = pad;
+                    let x1 = w - pad;
+                    let xm = (x0 + x1) / 2.0;
+                    b.move_to(Point::new(x0, cy + amp));
+                    b.line_to(Point::new(xm, cy - amp));
+                    b.line_to(Point::new(xm, cy + amp));
+                    b.line_to(Point::new(x1, cy - amp));
+                }
+                CarrierWave::Square => {
+                    let x0 = pad;
+                    let x1 = w - pad;
+                    let xm = (x0 + x1) / 2.0;
+                    b.move_to(Point::new(x0, cy - amp));
+                    b.line_to(Point::new(xm, cy - amp));
+                    b.line_to(Point::new(xm, cy + amp));
+                    b.line_to(Point::new(x1, cy + amp));
+                }
+                CarrierWave::Triangle => {
+                    let x0 = pad;
+                    let x1 = w - pad;
+                    let xm = (x0 + x1) / 2.0;
+                    b.move_to(Point::new(x0, cy));
+                    b.line_to(Point::new(xm, cy - amp));
+                    b.line_to(Point::new(x1, cy));
+                    b.move_to(Point::new(x0, cy));
+                    b.line_to(Point::new(xm, cy + amp));
+                    b.line_to(Point::new(x1, cy));
+                }
+            }
+        });
+        frame.stroke(&path, Stroke::default().with_color(color).with_width(1.6));
+        vec![frame.into_geometry()]
+    }
+}
+
+fn wave_icon_button(wave: CarrierWave, selected: bool) -> Element<'static, Message> {
+    button(Canvas::new(WaveIcon { wave, selected }).width(44).height(32))
+        .on_press(Message::CarrierWaveChanged(wave))
+        .padding(2)
+        .into()
 }
 
 // ── Spectrum canvas ───────────────────────────────────────────────────────────
