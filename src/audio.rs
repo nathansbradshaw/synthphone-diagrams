@@ -14,6 +14,8 @@ pub struct DspParams {
     pub carrier_freq: f32,
     /// Vocoder carrier waveform.
     pub carrier_waveform: Waveform,
+    /// When set, DSP effects are bypassed until this instant.
+    pub bypass_until: Option<std::time::Instant>,
 }
 
 // ── Audio data ────────────────────────────────────────────────────────────────

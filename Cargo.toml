@@ -8,5 +8,8 @@ iced = { version = "0.13", features = ["canvas", "image", "tokio"] }
 hound = "3.5"
 rfd = "0.14"
 rodio = "0.19"
+cpal = "0.15"
+midly = "0.5"
+ringbuf = "0.4"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 synthphone_e_vocal_dsp = { path = "../synthphone_e_vocal_dsp", package = "synthphone-e-vocal-dsp" }
