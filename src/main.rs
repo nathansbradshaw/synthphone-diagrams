@@ -198,6 +198,7 @@ struct App {
 
     // Scrolling pitch track history
     pitch_history: VecDeque<f32>,
+    output_pitch_history: VecDeque<f32>,
 
     // Playback position for transport bar
     play_position: usize,
@@ -273,6 +274,7 @@ impl App {
                 last_col_serial: 0,
                 spectrogram_img: empty_image(),
                 pitch_history: VecDeque::new(),
+                output_pitch_history: VecDeque::new(),
                 play_position: 0,
                 total_samples: 0,
                 is_playing: false,
@@ -442,6 +444,7 @@ impl App {
                     self.play_position = 0;
                     self.spectrogram_cols = VecDeque::new();
                     self.pitch_history = VecDeque::new();
+                    self.output_pitch_history = VecDeque::new();
                     self.last_col_serial = 0;
                     self.audio = Some(data);
                 }
@@ -464,12 +467,14 @@ impl App {
                 self.play_position = 0;
                 self.spectrogram_cols = VecDeque::new();
                 self.pitch_history = VecDeque::new();
+                self.output_pitch_history = VecDeque::new();
             }
             Message::Seek(frac) => {
                 let new_pos = (frac * self.total_samples as f32) as usize;
                 self.play_position = new_pos;
                 self.spectrogram_cols = VecDeque::new();
                 self.pitch_history = VecDeque::new();
+                self.output_pitch_history = VecDeque::new();
                 if self.is_playing {
                     self.start_dsp(new_pos);
                 }
@@ -477,9 +482,15 @@ impl App {
 
             // ── Real-time visualization tick ──────────────────────────────────
             Message::VizTick => {
-                let (col_serial, play_pos, total, pitch_hz) = {
+                let (col_serial, play_pos, total, pitch_hz, out_pitch_hz) = {
                     let v = self.viz.lock().unwrap();
-                    (v.col_serial, v.play_position, v.total_samples, v.pitch_hz)
+                    (
+                        v.col_serial,
+                        v.play_position,
+                        v.total_samples,
+                        v.pitch_hz,
+                        v.output_pitch_hz,
+                    )
                 };
 
                 // Append new spectrogram columns since last tick.
@@ -508,11 +519,16 @@ impl App {
                 if self.pitch_history.len() > MAX_PITCH_HISTORY {
                     self.pitch_history.pop_front();
                 }
+                self.output_pitch_history.push_back(out_pitch_hz);
+                if self.output_pitch_history.len() > MAX_PITCH_HISTORY {
+                    self.output_pitch_history.pop_front();
+                }
 
                 // End of file → loop from the beginning.
                 if self.is_playing && total > 0 && play_pos >= total {
                     self.spectrogram_cols.clear();
                     self.pitch_history.clear();
+                    self.output_pitch_history.clear();
                     self.start_dsp(0);
                 }
 
@@ -750,8 +766,8 @@ impl App {
 
         // ── Pitch track ───────────────────────────────────────────────────────
         let pitch_panel = Canvas::new(PitchTrackView {
-            pitch_track_hz: self.pitch_history.iter().copied().collect(),
-            sample_rate: sr,
+            input_pitch_hz: self.pitch_history.iter().copied().collect(),
+            output_pitch_hz: self.output_pitch_history.iter().copied().collect(),
         })
         .width(Length::Fill)
         .height(140);
@@ -764,7 +780,7 @@ impl App {
                     panels,
                     text("Spectrogram  (log freq, time →, scrolling)").size(12),
                     spectrogram,
-                    text("Pitch track  (YIN — last ~17s)").size(12),
+                    text("Pitch track  (YIN — green = input, cyan = output)").size(12),
                     pitch_panel,
                 ]
                 .spacing(3)
@@ -798,12 +814,6 @@ fn freq_to_x(freq: f32, sample_rate: f32, width: f32) -> f32 {
     let log_min = 20.0_f32.log2();
     let log_max = (sample_rate / 2.0).log2();
     (freq.log2() - log_min) / (log_max - log_min) * width
-}
-
-fn freq_to_y(freq: f32, sample_rate: f32, height: f32) -> f32 {
-    let log_min = 20.0_f32.log2();
-    let log_max = (sample_rate / 2.0).log2();
-    height * (1.0 - ((freq.log2() - log_min) / (log_max - log_min)).clamp(0.0, 1.0))
 }
 
 // ── Spectrogram image builder ─────────────────────────────────────────────────
@@ -1049,8 +1059,32 @@ impl canvas::Program<Message> for SpectrumView {
 // ── Pitch track canvas ────────────────────────────────────────────────────────
 
 struct PitchTrackView {
-    pitch_track_hz: Vec<f32>,
-    sample_rate: f32,
+    input_pitch_hz: Vec<f32>,
+    output_pitch_hz: Vec<f32>,
+}
+
+impl PitchTrackView {
+    /// Build a path from a pitch series, skipping unvoiced frames (< 50 Hz).
+    fn pitch_path(series: &[f32], w: f32, pitch_y: &dyn Fn(f32) -> f32) -> Path {
+        let n = series.len().max(1);
+        Path::new(|b| {
+            let mut in_seg = false;
+            for (i, &hz) in series.iter().enumerate() {
+                if hz < 50.0 {
+                    in_seg = false;
+                    continue;
+                }
+                let x = i as f32 / n as f32 * w;
+                let y = pitch_y(hz);
+                if !in_seg {
+                    b.move_to(Point::new(x, y));
+                    in_seg = true;
+                } else {
+                    b.line_to(Point::new(x, y));
+                }
+            }
+        })
+    }
 }
 
 impl canvas::Program<Message> for PitchTrackView {
@@ -1107,29 +1141,17 @@ impl canvas::Program<Message> for PitchTrackView {
             }
         }
 
-        if self.pitch_track_hz.is_empty() {
-            return vec![frame.into_geometry()];
+        // Input pitch — green
+        if !self.input_pitch_hz.is_empty() {
+            let path = Self::pitch_path(&self.input_pitch_hz, w, &pitch_y);
+            frame.stroke(&path, Stroke::default().with_color(GREEN).with_width(2.0));
         }
 
-        let n = self.pitch_track_hz.len();
-        let path = Path::new(|b| {
-            let mut in_seg = false;
-            for (i, &hz) in self.pitch_track_hz.iter().enumerate() {
-                if hz < 50.0 {
-                    in_seg = false;
-                    continue;
-                }
-                let x = i as f32 / n as f32 * w;
-                let y = pitch_y(hz);
-                if !in_seg {
-                    b.move_to(Point::new(x, y));
-                    in_seg = true;
-                } else {
-                    b.line_to(Point::new(x, y));
-                }
-            }
-        });
-        frame.stroke(&path, Stroke::default().with_color(GREEN).with_width(2.0));
+        // Output pitch — cyan
+        if !self.output_pitch_hz.is_empty() {
+            let path = Self::pitch_path(&self.output_pitch_hz, w, &pitch_y);
+            frame.stroke(&path, Stroke::default().with_color(CYAN).with_width(2.0));
+        }
 
         vec![frame.into_geometry()]
     }

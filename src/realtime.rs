@@ -38,6 +38,7 @@ pub struct VisualizationSnapshot {
     pub output_fft: Vec<f32>,       // HALF magnitude bins
     pub formant_envelope: Vec<f32>, // HALF cepstral envelope bins
     pub pitch_hz: f32,
+    pub output_pitch_hz: f32,
     pub spectrogram_col: Vec<f32>, // HALF – latest input FFT column
     pub col_serial: u64,           // increments every frame; GUI compares to detect new cols
     pub play_position: usize,      // sample index in the original (unpadded) audio
@@ -53,6 +54,7 @@ impl Default for VisualizationSnapshot {
             output_fft: vec![0.0; HALF],
             formant_envelope: vec![0.0; HALF],
             pitch_hz: 0.0,
+            output_pitch_hz: 0.0,
             spectrogram_col: vec![0.0; HALF],
             col_serial: 0,
             play_position: 0,
@@ -257,6 +259,9 @@ fn dsp_loop(
             )
         };
 
+        // ── Output pitch detection ────────────────────────────────────────────
+        let output_pitch_hz = find_pitch_yin(&result, &cur.config);
+
         // ── Overlap-add into accumulator ──────────────────────────────────────
         for (i, &s) in result.iter().enumerate() {
             let idx = pos + i;
@@ -310,6 +315,7 @@ fn dsp_loop(
             v.output_fft.copy_from_slice(&fft_out_mags);
             v.formant_envelope.copy_from_slice(&formant_env);
             v.pitch_hz = pitch_hz;
+            v.output_pitch_hz = output_pitch_hz;
             v.spectrogram_col.copy_from_slice(&fft_in_mags);
             v.col_serial += 1;
             v.play_position = play_pos;
