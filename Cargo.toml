@@ -1,0 +1,12 @@
+[package]
+name = "synthphone-diagrams"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+iced = { version = "0.13", features = ["canvas", "image", "tokio"] }
+hound = "3.5"
+rfd = "0.14"
+rodio = "0.19"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+synthphone_e_vocal_dsp = { path = "../synthphone_e_vocal_dsp", package = "synthphone-e-vocal-dsp" }
