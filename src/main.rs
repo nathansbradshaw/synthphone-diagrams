@@ -7,7 +7,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use iced::mouse;
-use iced::widget::canvas::{self, Frame, Path, Stroke};
+use iced::widget::canvas::{self, Frame, Path, Stroke, Text};
 use iced::widget::{Canvas, button, column, container, pick_list, row, slider, text};
 use iced::{
     Color, ContentFit, Element, Length, Pixels, Point, Renderer, Subscription, Task, Theme,
@@ -897,18 +897,32 @@ impl App {
             ].spacing(3).width(Length::FillPortion(1)),
         ].spacing(6);
 
+        let mut right_col = column![
+            transport_row,
+            panels,
+            spectrograms,
+            pitch_tracks,
+        ]
+        .spacing(6)
+        .padding(8);
+
+        if matches!(self.app_mode, AppMode::Harmony | AppMode::VocoderHarmony) {
+            if let Some(ref tl) = self.midi_timeline {
+                let position_tick = tl.sample_to_tick(self.play_position);
+                right_col = right_col.push(
+                    column![
+                        text("MIDI Notes").size(12),
+                        Canvas::new(StaffCanvas { midi: tl, position_tick })
+                            .width(Length::Fill)
+                            .height(STAFF_HEIGHT),
+                    ]
+                    .spacing(3),
+                );
+            }
+        }
+
         column![
-            row![
-                controls,
-                column![
-                    transport_row,
-                    panels,
-                    spectrograms,
-                    pitch_tracks,
-                ]
-                .spacing(6)
-                .padding(8),
-            ],
+            row![controls, right_col],
             container(text(&self.status).size(12))
                 .padding([4, 16])
                 .width(Length::Fill),
@@ -1299,4 +1313,186 @@ impl canvas::Program<Message> for PitchTrackCanvas {
 
         vec![frame.into_geometry()]
     }
+}
+
+// ── MIDI staff canvas (scrolling notation, one colour per voice part) ────────
+
+const TRACK_COLORS: &[(u8, u8, u8)] = &[
+    (0x4F, 0xC3, 0xF7), // sky blue — melody / main voice
+    (0xFF, 0xB7, 0x4D), // amber
+    (0xA5, 0xD6, 0xA7), // green
+    (0xF4, 0x8F, 0xB1), // pink
+    (0xCE, 0x93, 0xD8), // lavender
+    (0xFF, 0xF1, 0x76), // yellow
+    (0xFF, 0x8A, 0x65), // coral
+    (0x80, 0xCB, 0xC4), // teal
+];
+
+const STAFF_HEIGHT: f32 = 180.0;
+const STAFF_LINE_SPACING: f32 = 10.0;
+const STAFF_HALF_SPACE: f32 = STAFF_LINE_SPACING / 2.0;
+const STAFF_CLEF_WIDTH: f32 = 48.0;
+const STAFF_BEHIND_BEATS: f32 = 2.0;
+const STAFF_AHEAD_BEATS: f32 = 10.0;
+
+const DIATONIC: [i32; 12] = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6];
+
+fn staff_slot(midi: u8) -> i32 {
+    let octave = (midi as i32 / 12) - 1;
+    DIATONIC[(midi % 12) as usize] + (octave - 4) * 7
+}
+
+fn is_sharp(midi: u8) -> bool {
+    matches!(midi % 12, 1 | 3 | 6 | 8 | 10)
+}
+
+fn track_note_color(track: usize, is_active: bool, is_past: bool) -> Color {
+    let (r, g, b) = TRACK_COLORS[track % TRACK_COLORS.len()];
+    let (rf, gf, bf) = (r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0);
+    if is_active {
+        Color::new(rf, gf, bf, 1.0)
+    } else if is_past {
+        Color::new(rf * 0.27, gf * 0.27, bf * 0.27, 1.0)
+    } else {
+        Color::new(rf * 0.72, gf * 0.72, bf * 0.72, 1.0)
+    }
+}
+
+struct StaffCanvas<'a> {
+    midi: &'a MidiTimeline,
+    position_tick: u64,
+}
+
+impl<'a> canvas::Program<Message> for StaffCanvas<'a> {
+    type State = ();
+    fn draw(&self, _: &(), renderer: &Renderer, _: &Theme, bounds: iced::Rectangle, _: mouse::Cursor)
+        -> Vec<canvas::Geometry<Renderer>>
+    {
+        let mut frame = Frame::new(renderer, bounds.size());
+        draw_staff(&mut frame, bounds.size(), self.midi, self.position_tick);
+        vec![frame.into_geometry()]
+    }
+}
+
+fn draw_staff(frame: &mut Frame, size: iced::Size, midi: &MidiTimeline, pos: u64) {
+    let w = size.width;
+    let h = size.height;
+    frame.fill_rectangle(Point::ORIGIN, size, PANEL);
+
+    let tpb = midi.ticks_per_beat as f32;
+    let ppb = (w - STAFF_CLEF_WIDTH) / (STAFF_BEHIND_BEATS + STAFF_AHEAD_BEATS);
+    let ppt = ppb / tpb;
+    let playhead_x = STAFF_CLEF_WIDTH + STAFF_BEHIND_BEATS * ppb;
+    let ref_y = h * 0.5;
+
+    let tick_x = |t: u64| -> f32 { playhead_x + (t as f64 - pos as f64) as f32 * ppt };
+    let slot_y = |s: i32| -> f32 { ref_y - s as f32 * STAFF_HALF_SPACE };
+
+    // Staff lines (treble + bass)
+    let line_col = Color { r: 0.38, g: 0.38, b: 0.44, a: 1.0 };
+    for &s in &[2i32, 4, 6, 8, 10, -2, -4, -6, -8, -10] {
+        frame.stroke(
+            &Path::line(Point::new(STAFF_CLEF_WIDTH - 4.0, slot_y(s)), Point::new(w, slot_y(s))),
+            Stroke::default().with_color(line_col).with_width(1.0),
+        );
+    }
+
+    // Bar lines
+    let ticks_per_bar = (tpb as u64)
+        .saturating_mul(midi.time_sig.0 as u64)
+        .saturating_mul(4)
+        / (midi.time_sig.1 as u64).max(1);
+    if ticks_per_bar > 0 {
+        let vis_start = pos.saturating_sub(((STAFF_BEHIND_BEATS + 1.0) * tpb) as u64);
+        let vis_end = pos + ((STAFF_AHEAD_BEATS + 1.0) * tpb) as u64;
+        let first = (vis_start / ticks_per_bar) * ticks_per_bar;
+        let bar_col = Color { r: 0.24, g: 0.24, b: 0.30, a: 1.0 };
+        let mut bt = first;
+        while bt <= vis_end {
+            let x = tick_x(bt);
+            if x >= STAFF_CLEF_WIDTH {
+                frame.stroke(
+                    &Path::line(Point::new(x, slot_y(12)), Point::new(x, slot_y(-12))),
+                    Stroke::default().with_color(bar_col).with_width(1.0),
+                );
+            }
+            match bt.checked_add(ticks_per_bar) { Some(v) => bt = v, None => break }
+        }
+    }
+
+    // Clefs
+    let clef_col = Color { r: 0.72, g: 0.72, b: 0.78, a: 1.0 };
+    frame.fill_text(Text {
+        content: "\u{1D11E}".to_string(),
+        position: Point::new(4.0, slot_y(4) - 26.0),
+        color: clef_col,
+        size: Pixels(44.0),
+        horizontal_alignment: alignment::Horizontal::Left,
+        vertical_alignment: alignment::Vertical::Top,
+        ..Text::default()
+    });
+    frame.fill_text(Text {
+        content: "\u{1D122}".to_string(),
+        position: Point::new(4.0, slot_y(-4) - 8.0),
+        color: clef_col,
+        size: Pixels(24.0),
+        horizontal_alignment: alignment::Horizontal::Left,
+        vertical_alignment: alignment::Vertical::Top,
+        ..Text::default()
+    });
+
+    // Notes
+    let vis_start = pos.saturating_sub(((STAFF_BEHIND_BEATS + 1.0) * tpb) as u64);
+    let vis_end = pos + ((STAFF_AHEAD_BEATS + 1.0) * tpb) as u64;
+    let note_r = STAFF_HALF_SPACE * 0.82;
+
+    for note in &midi.notes {
+        if note.start_tick > vis_end || note.end_tick < vis_start { continue; }
+        let slot = staff_slot(note.midi_note);
+        let x = tick_x(note.start_tick);
+        let y = slot_y(slot);
+        if x < STAFF_CLEF_WIDTH - 24.0 || x > w + 16.0 { continue; }
+
+        let is_active = note.start_tick <= pos && pos < note.end_tick;
+        let is_past = note.end_tick <= pos;
+        let note_col = track_note_color(note.track, is_active, is_past);
+
+        let end_x = tick_x(note.end_tick).min(w);
+        if end_x > x + note_r {
+            let alpha = if is_active { 0.42 } else if is_past { 0.16 } else { 0.18 };
+            frame.stroke(
+                &Path::line(Point::new(x, y), Point::new(end_x, y)),
+                Stroke::default().with_color(Color { a: alpha, ..note_col }).with_width(note_r * 1.7),
+            );
+        }
+
+        frame.fill(&Path::circle(Point::new(x, y), note_r), note_col);
+
+        let middle = if slot >= 0 { 6 } else { -6 };
+        let stem_up = slot < middle;
+        let sx = x + if stem_up { note_r * 0.85 } else { -note_r * 0.85 };
+        let sy = y + if stem_up { -3.0 * STAFF_LINE_SPACING } else { 3.0 * STAFF_LINE_SPACING };
+        frame.stroke(
+            &Path::line(Point::new(sx, y), Point::new(sx, sy)),
+            Stroke::default().with_color(note_col).with_width(1.5),
+        );
+
+        if is_sharp(note.midi_note) && !is_past {
+            frame.fill_text(Text {
+                content: "#".to_string(),
+                position: Point::new(x - note_r * 2.8, y),
+                color: note_col,
+                size: Pixels(10.0),
+                horizontal_alignment: alignment::Horizontal::Center,
+                vertical_alignment: alignment::Vertical::Center,
+                ..Text::default()
+            });
+        }
+    }
+
+    // Playhead
+    frame.stroke(
+        &Path::line(Point::new(playhead_x, slot_y(13)), Point::new(playhead_x, slot_y(-13))),
+        Stroke::default().with_color(Color { r: 0.44, g: 0.72, b: 1.0, a: 0.75 }).with_width(2.0),
+    );
 }

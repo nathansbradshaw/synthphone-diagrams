@@ -128,6 +128,27 @@ pub fn start_mic_dsp_thread(
 // Mutates `block` (bitcrusher may touch it), fills `out_mags`, and writes
 // to viz. Returns the processed output slice (borrowed from internal state).
 
+/// Steady-state OLA gain correction for double-Hann windowed STFT.
+///
+/// The DSP library applies the analysis window on input AND the synthesis
+/// window on output, so the OLA reconstruction gain is sum(w[n-k*hop]^2)
+/// instead of 1.0. Dividing each output frame by this constant restores
+/// unity gain (no level change between input and output).
+fn compute_ola_gain(hann: &[f32; N], hop: usize) -> f32 {
+    if hop == 0 { return 1.0; }
+    let center = N / 2;
+    let span = (N as isize / hop as isize) + 2;
+    let mut sum = 0.0f32;
+    for k in -span..=span {
+        let idx = center as isize - k * hop as isize;
+        if idx >= 0 && (idx as usize) < N {
+            let w = hann[idx as usize];
+            sum += w * w;
+        }
+    }
+    if sum > 0.0 { 1.0 / sum } else { 1.0 }
+}
+
 struct FrameState {
     phases_in: [f32; N],
     phases_out: [f32; N],
@@ -140,10 +161,20 @@ struct FrameState {
     /// Last nonzero MIDI-driven carrier frequency — held across rests so the
     /// carrier doesn't drop out between notes (gate-hold, same as the phone).
     last_midi_carrier_hz: f32,
+    /// Compensates for the DSP lib windowing each frame twice (analysis +
+    /// synthesis Hann) before we overlap-add — without this the OLA sum
+    /// makes the output noticeably louder than the input.
+    ola_gain: f32,
 }
 
 impl FrameState {
-    fn new(carrier_freq: f32, sample_rate: f32, carrier_waveform: synthphone_e_vocal_dsp::audio::Waveform) -> Self {
+    fn new(
+        carrier_freq: f32,
+        sample_rate: f32,
+        carrier_waveform: synthphone_e_vocal_dsp::audio::Waveform,
+        hop: usize,
+    ) -> Self {
+        let hann = *Fft1024::get_hann_window();
         Self {
             phases_in: [0.0; N],
             phases_out: [0.0; N],
@@ -152,8 +183,9 @@ impl FrameState {
             carrier_osc: Oscillator::new(carrier_freq, sample_rate, carrier_waveform),
             acc_in: [0.0; HALF],
             frame_count: 0,
-            hann: *Fft1024::get_hann_window(),
+            hann,
             last_midi_carrier_hz: 0.0,
+            ola_gain: compute_ola_gain(&hann, hop),
         }
     }
 
@@ -213,20 +245,17 @@ impl FrameState {
             }
         }
 
-        // Harmony: inject MIDI target frequency
+        // Harmony: inject every currently-active MIDI voice part (main melody +
+        // backup harmonies) so the DSP shifts the input voice to all of them at once.
         let mut settings = cur.settings;
         if settings.mode == ProcessingMode::Harmony {
             if let Some(timeline) = midi {
-                let freq = timeline.freq_at(play_position);
-                settings.midi_frequencies = [0.0; 8];
-                if freq > 0.0 {
-                    settings.midi_frequencies[0] = freq;
-                }
+                settings.midi_frequencies = timeline.freqs_at(play_position);
             }
         }
 
         // DSP
-        let result = if settings.mode == ProcessingMode::Vocode {
+        let mut result = if settings.mode == ProcessingMode::Vocode {
             let mut carrier = [0.0f32; N];
             for s in carrier.iter_mut() { *s = self.carrier_osc.next_value(); }
             process_vocal_effects_1024(
@@ -243,6 +272,9 @@ impl FrameState {
                 1.0, &cur.config, &settings,
             )
         };
+        // Normalise OLA gain: DSP lib windows both analysis and synthesis, so
+        // double-Hann overlap-add sums to >1. Scale back to unity here.
+        for s in result.iter_mut() { *s *= self.ola_gain; }
 
         // Output FFT for viz
         let mut win_out = result;
@@ -314,7 +346,9 @@ fn file_dsp_loop(
         let p = params.lock().unwrap();
         (p.carrier_freq, p.carrier_waveform)
     };
-    let mut state = FrameState::new(init_freq, sample_rate as f32, init_wave);
+    let mut state = FrameState::new(init_freq, sample_rate as f32, init_wave, hop);
+    // Smoothed Vocode-mode makeup gain — see comment at the emission site below.
+    let mut vocode_gain = 1.0f32;
 
     let start_hop = (start_sample / hop) * hop;
     let mut pos = pre_pad + start_hop;
@@ -340,18 +374,48 @@ fn file_dsp_loop(
 
         let output_pitch_hz = find_pitch_yin(&result, &cur.config);
 
-        // OLA
-        for (i, &s) in result.iter().enumerate() {
-            let idx = pos + i;
-            if idx < ola_out.len() { ola_out[idx] += s; }
-        }
-
-        // Emit audio
-        if pos >= pre_pad {
-            for i in 0..hop_now {
+        if bypassed {
+            // True passthrough: emit raw input samples directly — no OLA windowing
+            // that would otherwise cause amplitude multiplication from overlap.
+            if pos >= pre_pad {
+                for i in 0..hop_now {
+                    let idx = pos + i;
+                    if idx < padded.len() {
+                        if audio_tx.send(padded[idx]).is_err() { break 'frame; }
+                    }
+                }
+            }
+        } else {
+            // OLA
+            for (i, &s) in result.iter().enumerate() {
                 let idx = pos + i;
-                if idx < ola_out.len() {
-                    if audio_tx.send(ola_out[idx]).is_err() { break 'frame; }
+                if idx < ola_out.len() { ola_out[idx] += s; }
+            }
+            // Vocode makeup gain: the vocoder re-synthesizes from the carrier's
+            // own harmonics scaled by the voice envelope, so its reconstructed
+            // level depends on how much the carrier's harmonics overlap the
+            // voice's spectrum — usually much quieter than the voice itself.
+            // Compare the just-finalized OLA output against the true raw input
+            // over the same samples (apples to apples) and smoothly correct.
+            if cur.settings.mode == ProcessingMode::Vocode && pos >= pre_pad {
+                let end = (pos + hop_now).min(ola_out.len()).min(padded.len());
+                if end > pos {
+                    let in_e: f32 = padded[pos..end].iter().map(|x| x * x).sum();
+                    let out_e: f32 = ola_out[pos..end].iter().map(|x| x * x).sum();
+                    if in_e > 1e-8 && out_e > 1e-8 {
+                        let target = (in_e / out_e).sqrt().clamp(0.25, 8.0);
+                        vocode_gain += (target - vocode_gain) * 0.15;
+                        for s in ola_out[pos..end].iter_mut() { *s *= vocode_gain; }
+                    }
+                }
+            }
+            // Emit audio
+            if pos >= pre_pad {
+                for i in 0..hop_now {
+                    let idx = pos + i;
+                    if idx < ola_out.len() {
+                        if audio_tx.send(ola_out[idx]).is_err() { break 'frame; }
+                    }
                 }
             }
         }
@@ -382,7 +446,9 @@ fn mic_dsp_loop(
         let p = params.lock().unwrap();
         (p.carrier_freq, p.carrier_waveform, p.config.hop_size.max(1) as usize)
     };
-    let mut state = FrameState::new(init_freq, sample_rate as f32, init_wave);
+    let mut state = FrameState::new(init_freq, sample_rate as f32, init_wave, hop);
+    // Smoothed Vocode-mode makeup gain — see comment at the emission site below.
+    let mut vocode_gain = 1.0f32;
 
     // Rolling OLA output buffer: length 2*N is enough for overlap-add.
     // Every hop we shift left by `hop` and zero the tail.
@@ -431,21 +497,152 @@ fn mic_dsp_loop(
 
         let output_pitch_hz = find_pitch_yin(&result, &cur.config);
 
-        // OLA: shift buffer left by hop_now, add new frame.
-        ola_buf.copy_within(hop_now.., 0);
-        for s in ola_buf[N..].iter_mut() { *s = 0.0; }
-        for (i, &s) in result.iter().enumerate() {
-            if i < ola_buf.len() { ola_buf[i] += s; }
-        }
-
-        // Emit hop_now samples.
-        for &s in &ola_buf[..hop_now] {
-            if audio_tx.send(s).is_err() { return; }
+        if bypassed {
+            // True passthrough: emit newest mic samples directly — no OLA
+            // windowing that would otherwise multiply amplitude via overlap.
+            for &s in &window[N - hop_now..] {
+                if audio_tx.send(s).is_err() { return; }
+            }
+        } else {
+            // OLA: shift buffer left by hop_now, add new frame.
+            ola_buf.copy_within(hop_now.., 0);
+            for s in ola_buf[N..].iter_mut() { *s = 0.0; }
+            for (i, &s) in result.iter().enumerate() {
+                if i < ola_buf.len() { ola_buf[i] += s; }
+            }
+            // Vocode makeup gain (see file_dsp_loop for rationale). `window[..hop_now]`
+            // and `ola_buf[..hop_now]` are time-aligned to the same raw/reconstructed span.
+            if cur.settings.mode == ProcessingMode::Vocode {
+                let in_e: f32 = window[..hop_now].iter().map(|x| x * x).sum();
+                let out_e: f32 = ola_buf[..hop_now].iter().map(|x| x * x).sum();
+                if in_e > 1e-8 && out_e > 1e-8 {
+                    let target = (in_e / out_e).sqrt().clamp(0.25, 8.0);
+                    vocode_gain += (target - vocode_gain) * 0.15;
+                    for s in ola_buf[..hop_now].iter_mut() { *s *= vocode_gain; }
+                }
+            }
+            // Emit hop_now samples.
+            for &s in &ola_buf[..hop_now] {
+                if audio_tx.send(s).is_err() { return; }
+            }
         }
 
         write_viz(&viz, &raw_block, &result, &fft_in, &fft_out, &formant,
                   pitch_hz, output_pitch_hz, play_pos);
 
         play_pos += hop_now;
+    }
+}
+
+#[cfg(test)]
+mod gain_probe_tests {
+    use super::*;
+    use crate::audio::DspParams;
+    use std::collections::VecDeque;
+    use synthphone_e_vocal_dsp::{MusicalSettings, ProcessingMode, VocalEffectsConfig};
+
+    fn rms(s: &[f32]) -> f32 {
+        (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt()
+    }
+
+    fn sine(total: usize, freq: f32, sample_rate: f32) -> Vec<f32> {
+        (0..total)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * freq * i as f32 / sample_rate).sin())
+            .collect()
+    }
+
+    fn make_params(mode: ProcessingMode, octave: i8) -> DspParams {
+        let mut settings = MusicalSettings::default();
+        settings.mode = mode;
+        settings.octave = octave;
+        DspParams {
+            config: VocalEffectsConfig::default(),
+            settings,
+            bit_depth: 16,
+            sample_rate_div: 1,
+            carrier_freq: 110.0,
+            carrier_waveform: synthphone_e_vocal_dsp::audio::Waveform::Saw,
+            bypass_until: None,
+            midi_driven_carrier: false,
+        }
+    }
+
+    /// Runs `file_dsp_loop` for real (same code the app uses) on a synthetic
+    /// sine input and reports the steady-state output/input RMS ratio.
+    fn probe_file_loop(mode: ProcessingMode, octave: i8, label: &str) {
+        let sample_rate = 48_000u32;
+        let total = sample_rate as usize * 2;
+        let input = sine(total, 220.0, sample_rate as f32);
+
+        let params = Arc::new(Mutex::new(make_params(mode, octave)));
+        let viz = Arc::new(Mutex::new(VisualizationSnapshot::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::sync_channel::<f32>(1 << 20);
+
+        file_dsp_loop(input.clone(), sample_rate, 0, params, viz, stop, None, tx);
+        let output: Vec<f32> = rx.try_iter().collect();
+
+        let skip = (sample_rate as f32 * 0.25) as usize;
+        let n = output.len().min(total);
+        let in_rms = rms(&input[skip..n - skip]);
+        let out_rms = rms(&output[skip..n - skip]);
+        println!("{label}: in_rms={in_rms:.5} out_rms={out_rms:.5} ratio={:.4}", out_rms / in_rms);
+    }
+
+    #[test]
+    fn probe_gain_ratios() {
+        probe_file_loop(ProcessingMode::Dry, 2, "Dry (octave=2, identity)");
+        probe_file_loop(ProcessingMode::PitchControl, 2, "PitchControl (octave=2, strength default)");
+        probe_file_loop(ProcessingMode::Harmony, 2, "Harmony (no midi target)");
+        probe_file_loop(ProcessingMode::Vocode, 2, "Vocode (saw carrier)");
+    }
+
+    /// Runs `mic_dsp_loop` for real by feeding a synthetic sine into the mic
+    /// ring from a producer thread, mirroring how cpal would.
+    fn probe_mic_loop(mode: ProcessingMode, octave: i8, label: &str) {
+        let sample_rate = 48_000u32;
+        let total = sample_rate as usize * 2;
+        let input = sine(total, 220.0, sample_rate as f32);
+
+        let params = Arc::new(Mutex::new(make_params(mode, octave)));
+        let viz = Arc::new(Mutex::new(VisualizationSnapshot::default()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let mic_ring: crate::mic::MicRing = Arc::new(Mutex::new(VecDeque::new()));
+        let (tx, rx) = mpsc::sync_channel::<f32>(1 << 20);
+
+        {
+            let mic_ring = mic_ring.clone();
+            let input = input.clone();
+            std::thread::spawn(move || {
+                mic_ring.lock().unwrap().extend(input.iter().copied());
+            });
+        }
+
+        let stop_clone = stop.clone();
+        let handle = std::thread::spawn(move || {
+            mic_dsp_loop(mic_ring, sample_rate, params, viz, stop_clone, None, tx);
+        });
+
+        // Let it drain the synthetic input, then stop.
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        stop.store(true, Ordering::Relaxed);
+        let _ = handle.join();
+        let output: Vec<f32> = rx.try_iter().collect();
+
+        let skip = (sample_rate as f32 * 0.05) as usize;
+        let n = output.len();
+        if n <= 2 * skip {
+            println!("{label}: not enough output samples ({n}) — skipping");
+            return;
+        }
+        let in_rms = rms(&input[skip..n - skip]);
+        let out_rms = rms(&output[skip..n - skip]);
+        println!("{label}: in_rms={in_rms:.5} out_rms={out_rms:.5} ratio={:.4}", out_rms / in_rms);
+    }
+
+    #[test]
+    fn probe_mic_loop_gain() {
+        probe_mic_loop(ProcessingMode::Dry, 2, "Mic-loop Dry");
+        probe_mic_loop(ProcessingMode::Vocode, 2, "Mic-loop Vocode (saw carrier)");
     }
 }
