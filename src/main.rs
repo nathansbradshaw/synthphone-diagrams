@@ -183,10 +183,20 @@ struct App {
     // Bypass
     bypass_until: Option<Instant>,
 
+    // Stats ("how crazy is this") — STFT frames and FFT calls, cumulative
+    // across DSP thread restarts. `stats_*_base` holds the count committed
+    // from prior threads (each new FrameState resets its own counters to 0).
+    frames_processed: u64,
+    fft_ops: u64,
+    stats_frames_base: u64,
+    stats_fft_ops_base: u64,
+
     // UI parameter state
     app_mode: AppMode,
     config: VocalEffectsConfig,
     pitch_strength: f32,
+    /// Pitch shift in semitones, -12..=24 (matches the achievable octave-param
+    /// range). 0 = unity. Mapped to the DSP's octave param via `octave_param_from_semitones`.
     octave: f32,
     carrier_wave: CarrierWave,
     carrier_freq: f32,
@@ -195,6 +205,7 @@ struct App {
     bit_depth: f32,
     sample_rate_div: f32,
     harmony_strength: f32,
+    /// Same semitone scale as `octave`, applied in Harmony mode.
     harmony_octave: f32,
 }
 
@@ -276,17 +287,21 @@ impl App {
                 total_samples: 0,
                 is_playing: false,
                 bypass_until: None,
+                frames_processed: 0,
+                fft_ops: 0,
+                stats_frames_base: 0,
+                stats_fft_ops_base: 0,
                 app_mode: AppMode::PitchCorrection,
                 config,
                 pitch_strength: 0.8,
-                octave: 2.0,
+                octave: 0.0,
                 carrier_wave: CarrierWave::Saw,
                 carrier_freq: 110.0,
                 formant_shift: 0.0,
                 bit_depth: 16.0,
                 sample_rate_div: 1.0,
                 harmony_strength: 0.8,
-                harmony_octave: 2.0,
+                harmony_octave: 0.0,
             },
             Task::none(),
         )
@@ -313,18 +328,18 @@ impl App {
         settings.mode = match self.app_mode {
             AppMode::PitchCorrection => {
                 config.pitch_correction_strength = self.pitch_strength;
-                settings.octave = self.octave.round() as i8;
+                settings.octave = octave_param_from_semitones(self.octave);
                 ProcessingMode::PitchControl
             }
             AppMode::Vocode => ProcessingMode::Vocode,
             AppMode::VocoderHarmony => ProcessingMode::Vocode,
             AppMode::Harmony => {
                 config.pitch_correction_strength = self.harmony_strength;
-                settings.octave = self.harmony_octave.round() as i8;
+                settings.octave = octave_param_from_semitones(self.harmony_octave);
                 ProcessingMode::Harmony
             }
             AppMode::Dry => {
-                settings.octave = self.octave.round() as i8;
+                settings.octave = octave_param_from_semitones(self.octave);
                 ProcessingMode::Dry
             }
         };
@@ -401,6 +416,9 @@ impl App {
             Some(ref a) => (a.samples.clone(), a.sample_rate),
             None => return,
         };
+        // Commit this session's stats before the new DSP thread resets its own counters.
+        self.stats_frames_base += self.frames_processed;
+        self.stats_fft_ops_base += self.fft_ops;
         self.stop_dsp();
         self.push_params();
         {
@@ -427,6 +445,9 @@ impl App {
     }
 
     fn start_mic_dsp(&mut self) {
+        // Commit this session's stats before the new DSP thread resets its own counters.
+        self.stats_frames_base += self.frames_processed;
+        self.stats_fft_ops_base += self.fft_ops;
         self.stop_dsp();
         self.push_params();
 
@@ -607,12 +628,15 @@ impl App {
             // ── Visualization tick ────────────────────────────────────────────
             Message::VizTick => {
                 let (col_serial, play_pos, total, pitch_hz, out_pitch_hz,
-                     in_spec_col, out_spec_col) = {
+                     in_spec_col, out_spec_col, frames_processed, fft_ops) = {
                     let v = self.viz.lock().unwrap();
                     (v.col_serial, v.play_position, v.total_samples,
                      v.pitch_hz, v.output_pitch_hz,
-                     v.input_spec_col.clone(), v.output_spec_col.clone())
+                     v.input_spec_col.clone(), v.output_spec_col.clone(),
+                     v.frames_processed, v.fft_ops)
                 };
+                self.frames_processed = self.stats_frames_base + frames_processed;
+                self.fft_ops = self.stats_fft_ops_base + fft_ops;
 
                 if col_serial > self.last_col_serial {
                     let v = self.viz.lock().unwrap();
@@ -703,8 +727,8 @@ impl App {
                 slider(0.0..=1.0_f32, self.pitch_strength, Message::PitchStrengthChanged).step(0.01_f32),
                 text(format!("{:.2}", self.pitch_strength)).size(12),
                 text("Pitch Shift").size(13),
-                slider(1.0_f32..=8.0_f32, self.octave, Message::OctaveChanged).step(0.1_f32),
-                text(format!("{:.1}× ({:.1}×)", self.octave, self.octave * 0.5)).size(12),
+                slider(-12.0_f32..=24.0_f32, self.octave, Message::OctaveChanged).step(0.5_f32),
+                text(octave_label(self.octave)).size(12),
             ].spacing(6).into(),
 
             AppMode::Vocode => column![
@@ -734,14 +758,14 @@ impl App {
                 slider(0.0..=1.0_f32, self.harmony_strength, Message::HarmonyStrengthChanged).step(0.01_f32),
                 text(format!("{:.2}", self.harmony_strength)).size(12),
                 text("Pitch Shift").size(13),
-                slider(1.0_f32..=8.0_f32, self.harmony_octave, Message::HarmonyOctaveChanged).step(0.1_f32),
-                text(format!("{:.1}×", self.harmony_octave)).size(12),
+                slider(-12.0_f32..=24.0_f32, self.harmony_octave, Message::HarmonyOctaveChanged).step(0.5_f32),
+                text(octave_label(self.harmony_octave)).size(12),
             ].spacing(6).into(),
 
             AppMode::Dry => column![
                 text("Pitch Shift").size(13),
-                slider(1.0_f32..=8.0_f32, self.octave, Message::OctaveChanged).step(0.1_f32),
-                text(format!("{:.1}× ({:.1}×)", self.octave, self.octave * 0.5)).size(12),
+                slider(-12.0_f32..=24.0_f32, self.octave, Message::OctaveChanged).step(0.5_f32),
+                text(octave_label(self.octave)).size(12),
             ].spacing(6).into(),
         };
 
@@ -926,12 +950,51 @@ impl App {
             container(text(&self.status).size(12))
                 .padding([4, 16])
                 .width(Length::Fill),
+            container(text(stats_label(self.frames_processed, self.fft_ops)).size(11).color(DIM))
+                .padding([0, 16])
+                .width(Length::Fill),
         ]
         .into()
     }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// "How crazy is this" footer: total STFT frames processed, FFT calls made
+/// (ours + the DSP lib's, see the per-mode counting in realtime.rs), and a
+/// comparison against what a textbook O(N²) DFT would have cost instead of
+/// the FFT's O(N log N) — to give a sense of how much computation is flying by.
+fn stats_label(frames: u64, fft_ops: u64) -> String {
+    if frames == 0 {
+        return "No audio processed yet.".to_string();
+    }
+    let n = N as f64;
+    let log2n = n.log2();
+    let butterfly_ops = fft_ops as f64 * n * log2n;
+    let naive_ops = fft_ops as f64 * n * n;
+    let speedup = if butterfly_ops > 0.0 { naive_ops / butterfly_ops } else { 0.0 };
+    format!(
+        "{} STFT frames processed · {} FFTs run (≈{} bins analyzed) · \
+         ≈{} FFT butterfly ops so far — a textbook O(N²) DFT would have taken ≈{} (~{:.0}× more)",
+        format_count(frames),
+        format_count(fft_ops),
+        format_count(frames * HALF as u64),
+        format_count(butterfly_ops as u64),
+        format_count(naive_ops as u64),
+        speedup,
+    )
+}
+
+fn format_count(n: u64) -> String {
+    let s = n.to_string();
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in bytes.iter().enumerate() {
+        if i > 0 && (bytes.len() - i) % 3 == 0 { out.push(','); }
+        out.push(*c as char);
+    }
+    out
+}
 
 fn formant_label(shift: f32) -> String {
     let ratio = 2.0_f32.powf(shift / 12.0);
@@ -941,6 +1004,26 @@ fn formant_label(shift: f32) -> String {
         format!("Male  {:+.1} st  ({:.2}×)", shift, ratio)
     } else {
         format!("Female  {:+.1} st  ({:.2}×)", shift, ratio)
+    }
+}
+
+/// The DSP's pitch-shift parameter (`settings.octave`) is a raw i8 multiplier
+/// (octave_factor = octave/2), so only 8 discrete ratios are reachable (0.5x..4.0x).
+/// We still expose the slider in semitones — like the formant slider — so equal
+/// drag distance feels like equal pitch change, snapping to the nearest reachable step.
+fn octave_param_from_semitones(semitones: f32) -> i8 {
+    let ratio = 2.0_f32.powf(semitones / 12.0);
+    (ratio * 2.0).round().clamp(1.0, 8.0) as i8
+}
+
+fn octave_label(semitones: f32) -> String {
+    let octave_param = octave_param_from_semitones(semitones);
+    let actual_ratio = octave_param as f32 * 0.5;
+    let actual_semitones = 12.0 * actual_ratio.log2();
+    if octave_param == 2 {
+        "Unison (off)".to_string()
+    } else {
+        format!("{:+.1} st  ({:.2}×)", actual_semitones, actual_ratio)
     }
 }
 

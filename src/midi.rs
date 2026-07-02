@@ -35,6 +35,9 @@ pub struct MidiTimeline {
     pub time_sig: (u8, u8),
     #[allow(dead_code)]
     pub total_ticks: u64,
+    /// Length of the file in samples — playback wraps modulo this so the
+    /// MIDI keeps looping for as long as the audio source keeps running.
+    pub total_samples: usize,
     sample_rate: u32,
 }
 
@@ -160,6 +163,8 @@ impl MidiTimeline {
             evs.sort_by_key(|(s, _)| *s);
         }
 
+        let total_samples = tick_to_sample(total_ticks);
+
         Ok(Self {
             track_events,
             track_count,
@@ -168,13 +173,22 @@ impl MidiTimeline {
             tempo_map,
             time_sig,
             total_ticks,
+            total_samples,
             sample_rate,
         })
+    }
+
+    /// Wrap a playback sample position into the file's range so the MIDI
+    /// loops indefinitely (needed for mic input, which never ends, and so
+    /// harmony/vocoder-harmony keep going past the end of a shorter MIDI file).
+    fn wrap(&self, sample_pos: usize) -> usize {
+        if self.total_samples == 0 { 0 } else { sample_pos % self.total_samples }
     }
 
     /// Per-voice-part active frequency at `sample_pos`. Index = track, 0.0 = rest.
     /// Feed directly into `MusicalSettings::midi_frequencies` for multi-voice harmony.
     pub fn freqs_at(&self, sample_pos: usize) -> [f32; MAX_TRACKS] {
+        let sample_pos = self.wrap(sample_pos);
         let mut out = [0.0f32; MAX_TRACKS];
         for (t, evs) in self.track_events.iter().enumerate().take(self.track_count) {
             if evs.is_empty() { continue; }
@@ -191,7 +205,9 @@ impl MidiTimeline {
     }
 
     /// Convert a playback sample position to a MIDI tick, for the staff playhead.
+    /// Wraps with the same loop as `freqs_at`/`freq_at`.
     pub fn sample_to_tick(&self, sample_pos: usize) -> u64 {
+        let sample_pos = self.wrap(sample_pos);
         let mut acc_samples: f64 = 0.0;
         let mut prev_tick: u64 = 0;
         let mut us_per_beat: u64 = 500_000;

@@ -41,6 +41,11 @@ pub struct VisualizationSnapshot {
     pub col_serial: u64,
     pub play_position: usize,
     pub total_samples: usize,
+    /// STFT hops processed since the engine started (this play session).
+    pub frames_processed: u64,
+    /// Approximate count of forward+inverse FFT calls performed (ours +
+    /// the DSP lib's internal ones) — for the "how crazy is this" stats panel.
+    pub fft_ops: u64,
 }
 
 impl Default for VisualizationSnapshot {
@@ -58,6 +63,8 @@ impl Default for VisualizationSnapshot {
             col_serial: 0,
             play_position: 0,
             total_samples: 0,
+            frames_processed: 0,
+            fft_ops: 0,
         }
     }
 }
@@ -165,6 +172,9 @@ struct FrameState {
     /// synthesis Hann) before we overlap-add — without this the OLA sum
     /// makes the output noticeably louder than the input.
     ola_gain: f32,
+    /// Running count of forward+inverse FFT calls (ours + the DSP lib's
+    /// internal ones), for the stats panel.
+    fft_ops: u64,
 }
 
 impl FrameState {
@@ -186,6 +196,7 @@ impl FrameState {
             hann,
             last_midi_carrier_hz: 0.0,
             ola_gain: compute_ola_gain(&hann, hop),
+            fft_ops: 0,
         }
     }
 
@@ -220,6 +231,7 @@ impl FrameState {
         let mut win_in = block;
         for (s, &w) in win_in.iter_mut().zip(self.hann.iter()) { *s *= w; }
         let fft_in = Fft1024::forward_fft(&mut win_in);
+        self.fft_ops += 1;
         let mut fft_in_mags = [0.0f32; HALF];
         for (i, c) in fft_in.iter().take(HALF).enumerate() {
             fft_in_mags[i] = (c.re * c.re + c.im * c.im).sqrt();
@@ -272,6 +284,12 @@ impl FrameState {
                 1.0, &cur.config, &settings,
             )
         };
+        // Approximate FFT call count inside the DSP lib for this mode: PitchControl/
+        // Dry/Harmony each do 1 forward + 1 inverse; Vocode does 2 forward
+        // (modulator + carrier) + 1 inverse. (Doesn't count the lib's own periodic
+        // formant-envelope refreshes — this is a "how crazy is this" estimate, not an audit.)
+        self.fft_ops += if settings.mode == ProcessingMode::Vocode { 3 } else { 2 };
+
         // Normalise OLA gain: DSP lib windows both analysis and synthesis, so
         // double-Hann overlap-add sums to >1. Scale back to unity here.
         for s in result.iter_mut() { *s *= self.ola_gain; }
@@ -280,6 +298,7 @@ impl FrameState {
         let mut win_out = result;
         for (s, &w) in win_out.iter_mut().zip(self.hann.iter()) { *s *= w; }
         let fft_out = Fft1024::forward_fft(&mut win_out);
+        self.fft_ops += 1;
         let mut fft_out_mags = [0.0f32; HALF];
         for (i, c) in fft_out.iter().take(HALF).enumerate() {
             fft_out_mags[i] = (c.re * c.re + c.im * c.im).sqrt();
@@ -291,6 +310,7 @@ impl FrameState {
         for (a, &b) in avg_in.iter_mut().zip(self.acc_in.iter()) { *a = b * scale; }
         let mut formant_env = [0.0f32; HALF];
         extract_cepstral_envelope::<N, HALF, Fft1024>(&avg_in, &mut formant_env);
+        self.fft_ops += 2; // 1 inverse + 1 forward FFT inside the cepstral lifter
 
         (result, fft_in_mags, fft_out_mags, formant_env)
     }
@@ -306,6 +326,8 @@ fn write_viz(
     pitch_hz: f32,
     output_pitch_hz: f32,
     play_pos: usize,
+    frames_processed: u64,
+    fft_ops: u64,
 ) {
     let mut v = viz.lock().unwrap();
     v.input_window.copy_from_slice(raw_block);
@@ -319,6 +341,8 @@ fn write_viz(
     v.output_spec_col.copy_from_slice(fft_out);
     v.col_serial += 1;
     v.play_position = play_pos;
+    v.frames_processed = frames_processed;
+    v.fft_ops = fft_ops;
 }
 
 // ── File DSP loop ─────────────────────────────────────────────────────────────
@@ -421,7 +445,8 @@ fn file_dsp_loop(
         }
 
         write_viz(&viz, &raw_block, &result, &fft_in, &fft_out, &formant,
-                  pitch_hz, output_pitch_hz, play_pos);
+                  pitch_hz, output_pitch_hz, play_pos,
+                  state.frame_count as u64, state.fft_ops);
 
         pos += hop_now;
     }
@@ -528,7 +553,8 @@ fn mic_dsp_loop(
         }
 
         write_viz(&viz, &raw_block, &result, &fft_in, &fft_out, &formant,
-                  pitch_hz, output_pitch_hz, play_pos);
+                  pitch_hz, output_pitch_hz, play_pos,
+                  state.frame_count as u64, state.fft_ops);
 
         play_pos += hop_now;
     }
