@@ -1,1 +1,4 @@
 /target
+/web/dist
+/web/target
+/web/xtask/target

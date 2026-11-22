@@ -1,0 +1,23 @@
+[package]
+name = "dsp-viewer-web"
+version = "0.1.0"
+edition = "2024"
+publish = false
+[workspace]
+[features]
+default = ["browser"]
+browser = []
+[lib]
+crate-type = ["cdylib", "rlib"]
+[dependencies]
+synthphone-e-vocal-dsp = { git = "https://github.com/nathansbradshaw/synthphone_e_vocal_dsp.git", rev = "c0546a747e472d6f93bead51c89392d1b58511af", default-features = false, features = ["std"] }
+midly = { version = "0.5.3", default-features = false, features = ["std"] }
+wasm-bindgen = "=0.2.127"
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+js-sys = "=0.3.104"
+wasm-bindgen-futures = "=0.4.77"
+web-sys = { version = "=0.3.104", features = ["Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Event", "EventTarget", "Node", "DomTokenList", "MessageEvent", "MessagePort", "Response", "Performance", "AudioContext", "AudioContextOptions", "AudioWorklet", "AudioWorkletNode", "AudioWorkletNodeOptions", "AudioNode", "AudioDestinationNode", "GainNode", "AudioParam", "AudioBuffer", "AudioBufferSourceNode", "AudioScheduledSourceNode", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaStreamAudioSourceNode", "File", "FileList", "Blob", "ImageData", "console"] }
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
