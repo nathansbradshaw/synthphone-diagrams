@@ -1,13 +1,13 @@
 # DSP Viewer · Web instrument
 
-**[Open DSP Viewer](https://synthphone-dsp-viewer.pinteru.chatgpt.site)** · owner-private hosting
+**[Open DSP Viewer](https://nathansbradshaw.github.io/synthphone-diagrams/)** · public GitHub Pages hosting
 
 1. **Power on** to start the harmonic test oscillator.
 2. Choose an effect. Green shows input; amber shows actual processed output.
 3. Switch the screen between waveform, spectrum, spectrogram, pitch, and measured spectral envelope.
 4. Enable **Listen** to hear output; use headphones with a microphone. Microphone monitoring always starts muted.
 
-Audio and MIDI files stay in the browser. No account, service, or upload participates in audio processing. The hosted page itself uses the hosting provider's private access controls.
+Audio and MIDI files stay in the browser. No account, service, or upload participates in audio processing. The app is public and requires no sign-in.
 
 ## Build / preview
 
@@ -29,6 +29,12 @@ cargo fmt --manifest-path xtask/Cargo.toml -- --check
 ```
 
 The DSP dependency is pinned to a published Git revision; no sibling library checkout is needed for the web build.
+
+## GitHub Pages deployment
+
+The repository publishes the prebuilt `web/dist/` contents from the root of its `gh-pages` branch. Build locally with the command above, update that branch with the resulting files, and push it to `origin`. Keep the existing deployment branch's history when updating it. GitHub Pages performs the final publishing step; no cloud Rust compilation or dependency installation is needed.
+
+The build includes `.nojekyll` so GitHub serves the WASM modules and other static files directly. Asset paths are relative, including the audio worklet and its WASM fetch, so the app runs under the repository's `/synthphone-diagrams/` prefix. Source code remains on `main`; `gh-pages` contains the deployable output.
 
 ## Efficiency
 

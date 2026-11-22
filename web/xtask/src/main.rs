@@ -79,6 +79,7 @@ fn execute() -> Result<(), String> {
                 fs::copy(root.join(name), root.join("dist").join(name))
                     .map_err(|e| e.to_string())?;
             }
+            fs::write(root.join("dist/.nojekyll"), "").map_err(|e| e.to_string())?;
             println!("Built {}", root.join("dist").display());
             Ok(())
         }
