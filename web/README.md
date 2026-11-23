@@ -21,16 +21,16 @@ Channel sensitivity, position, AC/DC/GND, visibility, timebase and Auto/Normal/S
 
 ## Build and preview
 
-Install Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` **0.2.127**. No Node, npm, Python or frontend framework is required.
+Install Rust's `wasm32-unknown-unknown` target, `wasm-bindgen-cli` **0.2.127**, and Binaryen (`wasm-opt`; verified with version 132). No Node, npm, Python or frontend framework is required. The AVIF images are checked in; image encoders are not needed to build.
 
 From `web/`:
 
 ```sh
 cargo run --manifest-path xtask/Cargo.toml -- build
-cargo run --manifest-path xtask/Cargo.toml -- serve 3040
+cargo run --manifest-path xtask/Cargo.toml -- serve 3032
 ```
 
-Open `http://127.0.0.1:3040`. Ctrl-C stops the loopback-only server. `dist/` is disposable and ignored. Set `CARGO_TARGET_DIR` to an existing absolute cache path to reuse it for the build tool and both WASM modules.
+Open `http://127.0.0.1:3032`. Check port ownership before starting a preview. Ctrl-C stops the loopback-only server. `dist/` is disposable and ignored. Set `CARGO_TARGET_DIR` to an existing absolute cache path to reuse it for the build tool and both WASM modules.
 
 ```sh
 cargo test --locked
@@ -43,7 +43,7 @@ The last command generates a 16-second WAV and MIDI with an eight-note chord for
 
 ## GitHub Pages
 
-Build locally, commit source to `main`, then copy `dist/` to the existing `gh-pages` branch and push. Preserve deployment history. GitHub Pages performs only final static publication; there is no cloud Rust build. `.nojekyll`, relative asset paths and versioned bootstrap/worklet URLs support the repository URL prefix. `version.json` identifies source commit, asset build hash and whether tracked source was dirty.
+Build locally, commit source to `main`, then overlay `dist/` onto the existing `gh-pages` branch and push. Preserve deployment history and prior fingerprinted files: cached/open pages can still reference them. Do not delete the old bootstrap files during this migration. GitHub Pages performs only final static publication; there is no cloud Rust build. `.nojekyll` and relative asset paths support the repository URL prefix. `version.json` identifies source commit, asset build hash and whether tracked source was dirty.
 
 ## Efficiency
 
@@ -53,7 +53,8 @@ Build locally, commit source to `main`, then copy `dist/` to the existing `gh-pa
 - Spectrograms scroll one column at a time in two 512×128 offscreen canvases. Pitch and timestamp histories cap at 512 readings. Canvas resolution is fixed independently of screen density.
 - MIDI tempo maps, chord states and target notes are prepared on the UI thread, then installed in the audio module as a compact timeline. Score rendering caps visible notes at 2,000. No MIDI parsing occurs per audio hop.
 - Local audio is limited to 512 MB and MIDI to 8 MB; there is no ten-minute cutoff. Decoded audio can use more memory than its compressed file. Loading or replacing a large timeline can briefly interrupt audio.
-- Six optimized photographic-style component assets total about 440 KB. There are no remote fonts, image requests or runtime dependencies. [Asset provenance and prompts](assets/README.md).
+- Six photographic-style component assets total about 170 KB in AVIF-capable browsers. The original WebP files remain as fallbacks. The UI module, its WebAssembly and the two large images are preloaded in parallel. [Asset provenance and prompts](assets/README.md).
+- Both WASM modules pass through `wasm-opt -Oz`. Code and CSS use content-fingerprinted filenames, so unchanged files retain their cache keys across releases. No remote fonts or runtime service dependencies. [Startup measurements](../docs/web-startup.md).
 
 ## Limits and verification
 

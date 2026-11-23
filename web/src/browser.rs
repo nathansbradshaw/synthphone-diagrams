@@ -143,6 +143,14 @@ fn post(k: &str, v: impl Into<JsValue>) {
     });
 }
 fn asset(path: &str) -> String {
+    let key = match path {
+        "engine.wasm" => "data-engine-src",
+        "audio-worklet.js" => "data-worklet-src",
+        _ => "",
+    };
+    if let Some(url) = doc().document_element().and_then(|e| e.get_attribute(key)) {
+        return url;
+    }
     let version = doc()
         .document_element()
         .and_then(|e| e.get_attribute("data-build"))
@@ -959,6 +967,12 @@ pub fn mount() {
     tick.forget();
     bind(window().unwrap().as_ref(), "pagehide", |_| stop());
     bind(window().unwrap().as_ref(), "resize", |_| draw());
+    let _ = doc()
+        .document_element()
+        .unwrap()
+        .set_attribute("data-controls-ready-ms", &format!("{:.0}", now()));
+    let _ = el("power").remove_attribute("disabled");
+    text("status", "Power off. Choose a source and press POWER ON.");
 }
 fn format_time(seconds: f64) -> String {
     let n = seconds.max(0.) as u64;

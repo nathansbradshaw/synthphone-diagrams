@@ -12,6 +12,10 @@ The web app uses every asset below. WebP compression/resizing uses `cwebp`; cont
 | `button.webp` | ~12 KB | Worn rectangular pushbuttons and coupling switches |
 | `bnc.webp` | ~12 KB | Metal input/output connectors |
 | `power.webp` | ~8 KB | Worn yellow power switch |
+| `enclosure.avif` | ~104 KB | Preferred same-dimension enclosure encoding; WebP fallback retained |
+| `crt.avif` | ~28 KB | Preferred same-dimension CRT encoding; WebP fallback retained |
+
+The AVIF variants were encoded from the existing WebP assets without new image generation. Encoding used `avifenc` with 8-bit YUV444, color quality 55 (enclosure) / 60 (CRT), alpha quality 90 and speed 5. Dimensions, placement and transparency are retained. Browser `image-set()` selects AVIF where supported; it does not download both alternatives.
 
 ## Final prompt set
 
