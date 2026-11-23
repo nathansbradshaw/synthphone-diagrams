@@ -36,13 +36,66 @@ fn copy_assets(from: &Path, to: &Path, hash: &mut DefaultHasher) -> Result<(), S
         .map_err(|e| e.to_string())?;
     entries.sort_by_key(|e| e.file_name());
     for entry in entries {
-        if entry.path().extension().is_some_and(|e| e == "webp") {
+        if entry
+            .path()
+            .extension()
+            .is_some_and(|e| e == "webp" || e == "avif")
+        {
             let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
             bytes.hash(hash);
             fs::write(to.join(entry.file_name()), bytes).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
+}
+fn fingerprint(root: &Path, name: &str) -> Result<String, String> {
+    let source = root.join(name);
+    let bytes = fs::read(&source).map_err(|e| e.to_string())?;
+    let mut hash = DefaultHasher::new();
+    bytes.hash(&mut hash);
+    let path = Path::new(name);
+    let stem = path.file_stem().unwrap().to_string_lossy();
+    let ext = path.extension().unwrap().to_string_lossy();
+    let target = path.with_file_name(format!("{stem}.{:016x}.{ext}", hash.finish()));
+    fs::write(root.join(&target), bytes).map_err(|e| e.to_string())?;
+    fs::remove_file(source).map_err(|e| e.to_string())?;
+    Ok(target.to_string_lossy().replace('\\', "/"))
+}
+fn optimize_wasm(path: &Path, root: &Path) -> Result<(), String> {
+    let output = path.with_extension("optimized.wasm");
+    run(
+        "wasm-opt",
+        &[
+            path.to_str().unwrap(),
+            "-Oz",
+            "--strip-debug",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        root,
+    )?;
+    fs::rename(output, path).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn changed_css_does_not_invalidate_cached_wasm() {
+        let dir = env::temp_dir().join(format!("dsp-package-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("ui.wasm"), b"same module").unwrap();
+        fs::write(dir.join("style.css"), b"first style").unwrap();
+        let wasm = fingerprint(&dir, "ui.wasm").unwrap();
+        let css = fingerprint(&dir, "style.css").unwrap();
+        fs::write(dir.join("ui.wasm"), b"same module").unwrap();
+        fs::write(dir.join("style.css"), b"revised style").unwrap();
+        assert_eq!(wasm, fingerprint(&dir, "ui.wasm").unwrap());
+        assert_ne!(css, fingerprint(&dir, "style.css").unwrap());
+        assert_eq!(fs::read(dir.join(wasm)).unwrap(), b"same module");
+        assert!(!dir.join("ui.wasm").exists());
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 fn execute() -> Result<(), String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -93,6 +146,8 @@ fn execute() -> Result<(), String> {
                 ],
                 &root,
             )?;
+            optimize_wasm(&root.join("dist/engine.wasm"), &root)?;
+            optimize_wasm(&out.join("dsp_viewer_web_bg.wasm"), &root)?;
             for name in [
                 "index.html",
                 "instrument.css",
@@ -119,8 +174,18 @@ fn execute() -> Result<(), String> {
                     .hash(&mut hash);
             }
             let build = format!("{:016x}", hash.finish());
-            let html =
+            let mut html =
                 fs::read_to_string(root.join("dist/index.html")).map_err(|e| e.to_string())?;
+            for (token, name) in [
+                ("__UI_JS__", "pkg/dsp_viewer_web.js"),
+                ("__UI_WASM__", "pkg/dsp_viewer_web_bg.wasm"),
+                ("__BASE_CSS__", "instrument.css"),
+                ("__PHOTO_CSS__", "photographic.css"),
+                ("__ENGINE__", "engine.wasm"),
+                ("__WORKLET__", "audio-worklet.js"),
+            ] {
+                html = html.replace(token, &fingerprint(&root.join("dist"), name)?);
+            }
             fs::write(
                 root.join("dist/index.html"),
                 html.replace("__BUILD__", &build),
@@ -145,7 +210,7 @@ fn execute() -> Result<(), String> {
         "serve" => {
             let port = env::args()
                 .nth(2)
-                .unwrap_or("3040".into())
+                .unwrap_or("3032".into())
                 .parse::<u16>()
                 .map_err(|e| e.to_string())?;
             let listener = TcpListener::bind(("127.0.0.1", port)).map_err(|e| e.to_string())?;
@@ -181,6 +246,7 @@ fn execute() -> Result<(), String> {
                     "js" => "text/javascript",
                     "wasm" => "application/wasm",
                     "webp" => "image/webp",
+                    "avif" => "image/avif",
                     _ => "application/octet-stream",
                 };
                 let (status, body) = match body {
