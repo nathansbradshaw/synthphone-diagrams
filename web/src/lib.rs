@@ -1,4 +1,6 @@
 //! Shared Rust DSP, with a narrow AudioWorklet bridge. UI and plotting are Rust too.
+#[cfg(any(test, all(target_arch = "wasm32", feature = "browser")))]
+mod control_markup;
 mod engine;
 #[cfg(any(test, all(target_arch = "wasm32", feature = "browser")))]
 mod key;

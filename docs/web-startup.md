@@ -1,19 +1,20 @@
-# Web startup optimization
+# Web startup
 
-The initial instrument transferred large photographic assets and fetched UI WebAssembly only after the JavaScript bootstrap arrived. A single build-wide query version also invalidated unchanged code after CSS-only updates.
+The photographic assets and instrument dimensions stay unchanged. Knob markup, readouts, screen controls and styles arrive in the first document; the browser connects their behavior after loading the UI module. The audio module still loads on Power.
 
-| Resource | Before | After |
+| Startup cost | Previous release | Current |
 | --- | ---: | ---: |
-| Enclosure image | 324,830 B WebP | 106,599 B AVIF |
-| CRT image | 77,252 B WebP | 28,883 B AVIF |
-| All six displayed image assets | 436,064 B | 169,464 B with AVIF |
-| UI WASM, uncompressed | 464,916 B | 257,168 B |
-| Audio WASM, uncompressed | 112,419 B | 88,268 B |
+| UI WASM, uncompressed | 306,956 B | 271,297 B |
+| Blocking stylesheet requests | 2 | 0 |
+| Document elements after mounting | 1,263 | 626 |
+| Repeated SVG tick lines | 700 | 28 shared lines |
+| Six displayed image assets with AVIF | 169,464 B | 169,464 B |
+| Audio WASM | 88,268 B | 88,268 B |
 
-The raw UI WASM reduction is about 45%; HTTP gzip reduces both versions further, so the transfer saving for WASM is smaller. Initial compressed HTML/CSS/JS/WASM plus preferred images is roughly half the previous transfer budget. This is a payload comparison, not a claim that every connection loads twice as fast. One sampled public enclosure download took 10.4 seconds; network timing varies.
+This is about 12% less UI code. Transfer compression, network conditions and caching affect elapsed load time; these counts are not a claim that every page load takes a fixed percentage less time. SVG instances reuse the same tick geometry and colors.
 
-The page starts UI JavaScript, UI WASM and large image requests from the document head. AVIF-capable browsers use the smaller images; WebP remains available. Binaryen's size optimizer runs without fast-math options. Every code/style asset receives its own content-fingerprinted filename; editing CSS no longer changes an unchanged module's URL. Prior deployed files are retained so older cached pages remain consistent.
+The Rust build prepares controls and shares readout formatting with the browser. The UI crate uses size optimization; audio retains its existing build options and identical content hash. JavaScript and WASM keep independent content-fingerprinted URLs. Previously deployed files remain available for cached pages. Power stays disabled until initialization completes; `data-controls-ready-ms` records that completion relative to navigation for debugging.
 
-Power becomes available when its controls are connected. The document's `data-controls-ready-ms` records actual initialization completion relative to navigation for debugging; it is not shown in the instrument. Local preview initialization measured 44 ms on the development machine; this is not a public-network benchmark.
+Cursor movement paints transparent screen overlays instead of redrawing the plots or requesting analysis. Live X/Y readings appear beside the crosshair with the inspector closed, track the current capture and zoom, and scale for small screens. A/B measurements stay in capture coordinates. PNG export composites the overlays with the plots.
 
-Verification covers content-based cache independence, local WASM builds, the eight processor paths in the browser, live A3 input/output measurement, power cycling, AVIF appearance and absence of browser errors. Native DSP tests remain applicable to the source; the browser checks exercise the optimized audio module.
+Verification covers prepared control defaults, fine knobs, shared tick definitions, complete initial styles/inspection markup, cache independence, optimized WASM builds, native DSP/math tests, browser power/input, pointer drag, live hover, hold/zoom, phone readability and capture export. Asset bytes and the audio binary are unchanged.

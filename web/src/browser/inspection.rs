@@ -24,6 +24,7 @@ struct Point {
     y: f64,
     levels: [Option<f64>; 2],
     unit: &'static str,
+    pixel: [f64; 2],
 }
 #[derive(Default)]
 struct State {
@@ -39,6 +40,9 @@ struct State {
     anchor: Option<Point>,
     dragging: Option<i32>,
     expanded: Option<(Element, Element)>,
+    overlays: [Option<CanvasRenderingContext2d>; 4],
+    fonts: [f64; 4],
+    tools_open: bool,
 }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 thread_local! { static DRAW_PENDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
@@ -48,7 +52,7 @@ fn queue_draw() {
     }
     let callback = Closure::once_into_js(|| {
         DRAW_PENDING.set(false);
-        draw();
+        redraw_overlays();
     });
     let _ = window()
         .unwrap()
@@ -83,7 +87,13 @@ pub(super) fn start(screen: usize) {
     STATE.with_borrow_mut(|s| {
         s.screen = screen;
         s.plots[screen].clear();
+        if let Some(c) = &s.overlays[screen] {
+            c.clear_rect(0., 0., 1000., 800.);
+        }
     });
+}
+pub(super) fn keep_capture(screen: usize) {
+    STATE.with_borrow_mut(|s| s.screen = screen);
 }
 fn register(s: &mut State, plot: Plot) {
     if !s.plots[s.screen]
@@ -193,9 +203,9 @@ fn readout(s: &State) -> String {
                 parts.push("A/B axes differ".into());
             }
         }
-        if let Some(p) = s.hover {
-            parts.push(format!("Pointer {}", point_text(p, s)));
-        }
+    }
+    if let Some(p) = live_hover(s) {
+        parts.push(format!("Pointer {}", point_text(p, s)));
     }
     let domain = s.plots[s.active]
         .get(s.plot)
@@ -204,9 +214,37 @@ fn readout(s: &State) -> String {
     parts.push(format!("{:.0}×", s.views[s.active][domain].zoom));
     parts.join("  ·  ")
 }
-pub(super) fn finish(c: &CanvasRenderingContext2d) {
+pub(super) fn finish(_: &CanvasRenderingContext2d) {
+    let screen = STATE.with_borrow_mut(|s| {
+        if s.active == s.screen {
+            s.plot = s.plot.min(s.plots[s.screen].len().saturating_sub(1));
+        }
+        s.screen
+    });
+    paint_screen(screen);
+}
+fn redraw_overlays() {
+    for screen in 0..4 {
+        paint_screen(screen);
+    }
+}
+fn resize_overlays() {
+    let fonts = std::array::from_fn(|screen| {
+        let canvas = canvas(screen);
+        (12. * canvas.width() as f64 / canvas.get_bounding_client_rect().width().max(1.))
+            .clamp(21., 48.)
+    });
+    STATE.with_borrow_mut(|s| s.fonts = fonts);
+    redraw_overlays();
+}
+fn paint_screen(screen: usize) {
+    let Some(context) = STATE.with_borrow(|s| s.overlays[screen].clone()) else {
+        return;
+    };
+    let c = &context;
+    c.clear_rect(0., 0., 1000., 800.);
     STATE.with_borrow(|s| {
-        let screen = s.screen;
+        let hover = live_hover(s).filter(|p| p.screen == screen);
         c.save();
         c.set_shadow_blur(0.);
         c.set_font(if screen == 0 {
@@ -248,14 +286,14 @@ pub(super) fn finish(c: &CanvasRenderingContext2d) {
                     "20px monospace"
                 });
             }
-            if !s.enabled {
+            if !s.enabled && !hover.is_some_and(|pt| pt.plot == index) {
                 continue;
             }
             c.save();
             c.begin_path();
             c.rect(r.x, r.y, r.w, r.h);
             c.clip();
-            for (i, point) in s.cursors.iter().enumerate() {
+            for (i, point) in s.cursors.iter().enumerate().filter(|_| s.enabled) {
                 let Some(point) = point.filter(|pt| pt.domain == p.domain) else {
                     continue;
                 };
@@ -285,7 +323,7 @@ pub(super) fn finish(c: &CanvasRenderingContext2d) {
                     c.stroke();
                 }
             }
-            if let Some(point) = s.hover.filter(|pt| pt.screen == screen && pt.plot == index) {
+            if let Some(point) = hover.filter(|pt| pt.plot == index) {
                 let x = r.x + axis.fraction(point.x) * r.w;
                 let y = r.y + point.y * r.h;
                 c.set_stroke_style_str("#c5edda88");
@@ -299,31 +337,112 @@ pub(super) fn finish(c: &CanvasRenderingContext2d) {
                 c.stroke();
             }
             c.restore();
+            let point = hover.filter(|pt| pt.plot == index).or_else(|| {
+                s.cursors[s.selected].filter(|pt| {
+                    s.enabled
+                        && s.active == screen
+                        && pt.screen == screen
+                        && pt.plot == index
+                        && pt.domain == p.domain
+                })
+            });
+            if let Some(point) = point {
+                if (0. ..=1.).contains(&axis.fraction(point.x)) {
+                    live_label(c, point, p, axis, s, screen);
+                }
+            }
         }
         c.restore();
         text("inspection-readout", &readout(s));
     });
+}
+fn live_label(
+    c: &CanvasRenderingContext2d,
+    point: Point,
+    plot: &Plot,
+    axis: Axis,
+    s: &State,
+    screen: usize,
+) {
+    let mut lines = vec![format!("X {}", fmt(point.x, x_unit(point.domain)))];
+    for (ch, level) in point.levels.iter().enumerate() {
+        if let Some(level) = level {
+            lines.push(format!(
+                "{} {}",
+                if point.levels[1].is_some() {
+                    if ch == 0 { "Y1" } else { "Y2" }
+                } else {
+                    "Y"
+                },
+                fmt(*level, point.unit)
+            ));
+        }
+    }
+    if s.enabled {
+        if let [Some(a), Some(b)] = s.cursors {
+            if a.domain == point.domain && b.domain == point.domain {
+                let delta = b.x - a.x;
+                let mut line = format!("Δ {}", fmt(delta, x_unit(point.domain)));
+                if matches!(point.domain, TIME | PERIOD) {
+                    if let Some(hz) = period_hz(delta) {
+                        line.push_str(&format!(" / {}", fmt(hz, "Hz")));
+                    }
+                }
+                lines.push(line);
+            }
+        }
+    }
+    let font = s.fonts[screen].max(21.);
+    let width =
+        lines.iter().map(|s| s.chars().count()).max().unwrap_or(0) as f64 * font * 0.61 + 18.;
+    let height = lines.len() as f64 * (font + 5.) + 12.;
+    let size = if screen == 0 {
+        (1000., 800.)
+    } else {
+        (600., 400.)
+    };
+    let r = plot.area;
+    let x = (r.x + axis.fraction(point.x) * r.w + 14.).clamp(14., (size.0 - width - 14.).max(14.));
+    let y = (r.y + point.y * r.h + 14.).clamp(42., (size.1 - height - 42.).max(42.));
+    c.save();
+    c.set_shadow_blur(0.);
+    c.set_font(&format!("{font}px monospace"));
+    c.set_fill_style_str("#062829f2");
+    c.fill_rect(x, y, width, height);
+    c.set_stroke_style_str("#88cdbb");
+    c.set_line_width(1.);
+    c.stroke_rect(x, y, width, height);
+    for (i, line) in lines.iter().enumerate() {
+        label(c, line, x + 9., y + font + 5. + i as f64 * (font + 5.));
+    }
+    c.restore();
 }
 fn hit(screen: usize, e: &PointerEvent) -> Option<Point> {
     let canvas = canvas(screen);
     let r = canvas.get_bounding_client_rect();
     let x = (e.client_x() as f64 - r.x()) / r.width() * canvas.width() as f64;
     let y = (e.client_y() as f64 - r.y()) / r.height() * canvas.height() as f64;
-    STATE.with_borrow(|s| {
-        s.plots[screen].iter().enumerate().find_map(|(index, p)| {
-            let r = p.area;
-            if x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h {
-                return None;
-            }
-            Some(Point {
-                screen,
-                plot: index,
-                domain: p.domain,
-                x: p.x.slice(s.views[screen][p.domain]).at((x - r.x) / r.w),
-                y: (y - r.y) / r.h,
-                levels: p.y.map(|a| a.map(|a| a.at(1. - (y - r.y) / r.h))),
-                unit: p.unit,
-            })
+    STATE.with_borrow(|s| point_at(s, screen, x, y))
+}
+fn live_hover(s: &State) -> Option<Point> {
+    let p = s.hover?;
+    point_at(s, p.screen, p.pixel[0], p.pixel[1])
+}
+fn point_at(s: &State, screen: usize, x: f64, y: f64) -> Option<Point> {
+    s.plots[screen].iter().enumerate().find_map(|(index, p)| {
+        let r = p.area;
+        if x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h {
+            return None;
+        }
+        Some(Point {
+            screen,
+            plot: index,
+            domain: p.domain,
+            x: p.x.slice(s.views[screen][p.domain]).at((x - r.x) / r.w),
+            y: (y - r.y) / r.h,
+            levels: p.y.map(|a| a.map(|a| a.at(1. - (y - r.y) / r.h))),
+            unit: p.unit,
+            pixel: [x, y],
         })
     })
 }
@@ -347,7 +466,8 @@ fn zoom(factor: f64, pan: f64) {
                 .anchor
                 .filter(|h| h.screen == s.active && h.domain == p.domain)
             {
-                view.center = p.x.fraction(h.x).clamp(0., 1.);
+                let fraction = ((h.pixel[0] - p.area.x) / p.area.w).clamp(0., 1.);
+                view.center = p.x.fraction(p.x.slice(*view).at(fraction)).clamp(0., 1.);
             }
         }
         view.zoom_by(factor);
@@ -368,6 +488,7 @@ fn restore() {
             .unwrap();
         let dialog: HtmlDialogElement = el("screen-dialog").unchecked_into();
         dialog.close();
+        resize_overlays();
         let screen = STATE.with_borrow(|s| s.active);
         let _ = canvas(screen).focus();
         el("screen-enlarge")
@@ -422,6 +543,7 @@ pub(super) fn sync(frozen: bool) {
     });
 }
 fn hide_tools() {
+    STATE.with_borrow_mut(|s| s.tools_open = false);
     el("inspection-home").set_attribute("hidden", "").unwrap();
     for screen in 0..4 {
         let _ = el(&format!("inspect-screen-{screen}")).set_attribute("aria-expanded", "false");
@@ -442,6 +564,7 @@ fn show_tools(screen: usize) {
     text("inspection-title", &format!("{} · INSPECT", name(screen)));
     let home = el("inspection-home");
     home.remove_attribute("hidden").unwrap();
+    STATE.with_borrow_mut(|s| s.tools_open = true);
     sync(APP.with_borrow(|a| a.frozen));
     let expanded = STATE.with_borrow(|s| s.expanded.is_some());
     let r = el(&if expanded {
@@ -519,6 +642,7 @@ fn enlarge() {
     STATE.with_borrow_mut(|s| s.expanded = Some((hood, placeholder)));
     let dialog: HtmlDialogElement = el("screen-dialog").unchecked_into();
     let _ = dialog.show_modal();
+    resize_overlays();
     el("screen-enlarge")
         .set_attribute("aria-expanded", "true")
         .unwrap();
@@ -538,6 +662,13 @@ fn export() -> Result<(), JsValue> {
         let x = 30. + (screen - 1) as f64 * 490.;
         label(&c, &name(screen), x, 82.);
         c.draw_image_with_html_canvas_element_and_dw_and_dh(&canvas(screen), x, 95., 460., 307.)?;
+        c.draw_image_with_html_canvas_element_and_dw_and_dh(
+            &el(&format!("cursor-overlay-{screen}")).unchecked_into(),
+            x,
+            95.,
+            460.,
+            307.,
+        )?;
     }
     c.draw_image_with_html_canvas_element_and_dw_and_dh(
         &el("grid").unchecked_into(),
@@ -547,6 +678,13 @@ fn export() -> Result<(), JsValue> {
         1000.,
     )?;
     c.draw_image_with_html_canvas_element_and_dw_and_dh(&canvas(0), 125., 435., 1250., 1000.)?;
+    c.draw_image_with_html_canvas_element_and_dw_and_dh(
+        &el("cursor-overlay-0").unchecked_into(),
+        125.,
+        435.,
+        1250.,
+        1000.,
+    )?;
     c.set_font("18px monospace");
     let summary = STATE.with_borrow(readout);
     for (i, chunk) in summary
@@ -609,23 +747,7 @@ fn export() -> Result<(), JsValue> {
     Ok(())
 }
 pub(super) fn mount() {
-    let home = doc().create_element("div").unwrap();
-    home.set_id("inspection-home");
-    home.set_class_name("instrument inspection-popover");
-    home.set_attribute("hidden", "").unwrap();
-    home.set_attribute("role", "dialog").unwrap();
-    home.set_attribute("aria-labelledby", "inspection-title")
-        .unwrap();
-    home.set_inner_html(r#"<div class="inspection-heading"><h2 id="inspection-title">INSPECT</h2><button id="inspection-close">CLOSE</button></div><div id="screen-tools" class="screen-tools" role="group" aria-label="Screen inspection"><fieldset><legend>MEASURE</legend><div class="inspection-buttons"><button id="screen-cursors" aria-pressed="false">CURSORS</button><button id="cursor-a" aria-pressed="true">CURSOR A</button><button id="cursor-b" aria-pressed="false">CURSOR B</button></div></fieldset><fieldset><legend>VIEW</legend><div class="inspection-buttons"><button id="screen-zoom-in">ZOOM +</button><button id="screen-zoom-out">ZOOM −</button><button id="screen-fit">AUTO FIT</button><button id="screen-left">PAN ←</button><button id="screen-right">PAN →</button><button id="screen-enlarge" aria-expanded="false">ENLARGE</button></div></fieldset><fieldset><legend>CAPTURE</legend><div class="inspection-buttons"><button id="screen-hold" aria-pressed="false">HOLD</button><button id="screen-save">SAVE PNG</button></div></fieldset><output id="inspection-readout" aria-label="Cursor measurements"></output><span id="capture-status" role="status" aria-live="polite"></span></div>"#);
-    doc().body().unwrap().append_child(&home).unwrap();
-    let dialog = doc().create_element("dialog").unwrap();
-    dialog.set_id("screen-dialog");
-    dialog.set_class_name("instrument inspection-dialog");
-    dialog
-        .set_attribute("aria-labelledby", "screen-dialog-title")
-        .unwrap();
-    dialog.set_inner_html(r#"<div class="screen-dialog-header"><h2 id="screen-dialog-title"></h2><button id="inspect-expanded" aria-expanded="false" aria-controls="inspection-home">INSPECT</button><button id="screen-restore">RESTORE</button></div><div id="screen-socket"></div><div id="inspection-expanded-tools"></div>"#);
-    doc().body().unwrap().append_child(&dialog).unwrap();
+    bind(window().unwrap().as_ref(), "resize", |_| resize_overlays());
     bind(el("inspect-expanded").as_ref(), "click", |_| {
         show_tools(STATE.with_borrow(|s| s.active))
     });
@@ -812,54 +934,30 @@ pub(super) fn mount() {
     });
     for screen in 0..4 {
         let target = canvas(screen);
-        let hood = target
-            .closest(if screen == 0 {
-                ".crt-hood"
-            } else {
-                ".aux-hood"
-            })
-            .unwrap()
-            .unwrap();
-        let launcher = doc().create_element("button").unwrap();
-        launcher.set_id(&format!("inspect-screen-{screen}"));
-        launcher.set_class_name("inspect-launcher");
-        launcher.set_text_content(Some("INSPECT"));
-        launcher
-            .set_attribute(
-                "aria-label",
-                &format!("Inspect {}", name(screen).to_ascii_lowercase()),
-            )
-            .unwrap();
-        launcher.set_attribute("aria-expanded", "false").unwrap();
-        launcher
-            .set_attribute("aria-controls", "inspection-home")
-            .unwrap();
-        if screen == 0 {
-            let wrapper = doc().create_element("div").unwrap();
-            wrapper.set_class_name("main-screen");
-            hood.parent_node()
-                .unwrap()
-                .insert_before(&wrapper, Some(&hood))
-                .unwrap();
-            let heading = doc().create_element("div").unwrap();
-            heading.set_class_name("screen-label");
-            heading.set_inner_html("<span>MAIN DISPLAY</span>");
-            heading.append_child(&launcher).unwrap();
-            wrapper.append_child(&heading).unwrap();
-            wrapper.append_child(&hood).unwrap();
+        let surface = if screen == 0 {
+            target.parent_element().unwrap()
         } else {
-            let heading = hood
-                .parent_element()
+            let surface = doc().create_element("div").unwrap();
+            surface.set_class_name("screen-surface");
+            target
+                .parent_node()
                 .unwrap()
-                .query_selector("h2")
-                .unwrap()
+                .insert_before(&surface, Some(&target))
                 .unwrap();
-            heading.append_child(&launcher).unwrap();
-        }
-        let meter = doc().create_element("output").unwrap();
-        meter.set_id(&format!("screen-meter-{screen}"));
-        meter.set_class_name("screen-meter");
-        hood.append_child(&meter).unwrap();
+            surface.append_child(&target).unwrap();
+            surface
+        };
+        let overlay: HtmlCanvasElement = doc().create_element("canvas").unwrap().unchecked_into();
+        overlay.set_id(&format!("cursor-overlay-{screen}"));
+        overlay.set_class_name("cursor-overlay");
+        overlay.set_width(target.width());
+        overlay.set_height(target.height());
+        overlay.set_attribute("aria-hidden", "true").unwrap();
+        surface.append_child(&overlay).unwrap();
+        STATE.with_borrow_mut(|s| {
+            s.overlays[screen] = Some(overlay.get_context("2d").unwrap().unwrap().unchecked_into())
+        });
+        let launcher = el(&format!("inspect-screen-{screen}"));
         bind(launcher.as_ref(), "click", move |_| show_tools(screen));
         target.set_tab_index(0);
         target.set_attribute("aria-description","Tap to enlarge. With cursors on, drag A or B; arrow keys move the selected cursor. Enter enlarges; Escape restores.").unwrap();
@@ -890,9 +988,11 @@ pub(super) fn mount() {
             let drag = STATE.with_borrow_mut(|s| {
                 s.hover = point;
                 if let Some(p) = point {
-                    s.active = screen;
-                    s.plot = p.plot;
-                    s.anchor = Some(p);
+                    if !s.tools_open || s.active == screen {
+                        s.active = screen;
+                        s.plot = p.plot;
+                        s.anchor = Some(p);
+                    }
                 }
                 s.enabled && s.dragging == Some(e.pointer_id())
             });
@@ -901,9 +1001,7 @@ pub(super) fn mount() {
                     cursor_place(p);
                 }
             }
-            if STATE.with_borrow(|s| s.enabled) {
-                queue_draw();
-            }
+            queue_draw();
         });
         for event in ["pointerup", "pointercancel", "lostpointercapture"] {
             bind(target.as_ref(), event, move |_| {
@@ -912,7 +1010,7 @@ pub(super) fn mount() {
         }
         bind(target.as_ref(), "pointerleave", |_| {
             STATE.with_borrow_mut(|s| s.hover = None);
-            draw();
+            redraw_overlays();
         });
         bind(target.as_ref(), "click", move |_| {
             STATE.with_borrow_mut(|s| s.active = screen);
@@ -951,6 +1049,10 @@ pub(super) fn mount() {
                                 y: 0.5,
                                 levels: plot.y.map(|a| a.map(|a| a.at(0.5))),
                                 unit: plot.unit,
+                                pixel: [
+                                    plot.area.x + plot.area.w * 0.5,
+                                    plot.area.y + plot.area.h * 0.5,
+                                ],
                             });
                         if let Some((level, axis)) = p.levels[0].zip(plot.y[0]) {
                             p.y = (1. - axis.fraction(level)).clamp(0., 1.);
@@ -977,4 +1079,5 @@ pub(super) fn mount() {
             }
         });
     }
+    resize_overlays();
 }
