@@ -565,14 +565,8 @@ fn update_monitor() {
 }
 fn draw() {
     let captured = APP.with_borrow_mut(|a| {
-        if el("analysis-toggle")
-            .get_attribute("aria-expanded")
-            .as_deref()
-            == Some("true")
-        {
-            a.display
-                .draw_aux(&a.snapshot, a.context.is_some(), a.timeline.as_ref());
-        }
+        a.display
+            .draw_aux(&a.snapshot, a.context.is_some(), a.timeline.as_ref());
         a.display.draw(
             &a.snapshot,
             a.view,
@@ -601,18 +595,6 @@ pub fn mount() {
     params();
     button_bank("data-view", "6");
     draw();
-    bind(el("analysis-toggle").as_ref(), "click", |_| {
-        let open = el("analysis-bay").has_attribute("hidden");
-        el("analysis-toggle")
-            .set_attribute("aria-expanded", if open { "true" } else { "false" })
-            .unwrap();
-        if open {
-            el("analysis-bay").remove_attribute("hidden").unwrap();
-        } else {
-            el("analysis-bay").set_attribute("hidden", "").unwrap();
-        }
-        draw();
-    });
     for id in ["aux-view-0", "aux-view-1", "aux-view-2"] {
         bind(el(id).as_ref(), "change", |_| draw());
     }
