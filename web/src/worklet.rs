@@ -29,8 +29,10 @@ pub unsafe extern "C" fn engine_analyze(e: *mut Engine, view: u8) -> *const f32 
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn engine_configure(e: *mut Engine) {
     let e = unsafe { &mut *e };
-    let mut values = [0.; 11];
-    values.copy_from_slice(unsafe { std::slice::from_raw_parts(e.input_ptr(), 11) });
+    let mut values = [0.; crate::engine::PARAM_COUNT];
+    values.copy_from_slice(unsafe {
+        std::slice::from_raw_parts(e.input_ptr(), crate::engine::PARAM_COUNT)
+    });
     e.configure(&values);
 }
 #[unsafe(no_mangle)]
@@ -44,5 +46,13 @@ pub extern "C" fn midi_alloc(len: usize) -> *mut u8 {
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn engine_midi(e: *mut Engine, ptr: *mut u8, len: usize) -> u32 {
     let data = unsafe { Box::from_raw(std::ptr::slice_from_raw_parts_mut(ptr, len)) };
-    unsafe { &mut *e }.load_midi(&data).is_ok() as u32
+    unsafe { &mut *e }.load_timeline(&data).is_ok() as u32
+}
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn engine_audio_duration(e: *mut Engine, seconds: f64) {
+    unsafe { &mut *e }.audio_duration(seconds);
+}
+#[unsafe(no_mangle)]
+pub extern "C" fn engine_snapshot_len() -> usize {
+    crate::engine::SNAPSHOT_LEN
 }

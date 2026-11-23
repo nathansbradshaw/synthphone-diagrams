@@ -1,17 +1,27 @@
 # DSP Viewer · Web instrument
 
-**[Open DSP Viewer](https://nathansbradshaw.github.io/synthphone-diagrams/)** · public GitHub Pages hosting
+**[Open DSP Viewer](https://nathansbradshaw.github.io/synthphone-diagrams/)** · public GitHub Pages
 
-1. **Power on** to start the harmonic test oscillator.
-2. Choose an effect. Green shows input; amber shows actual processed output.
-3. Switch the screen between waveform, spectrum, spectrogram, pitch, and measured spectral envelope.
-4. Enable **Listen** to hear output; use headphones with a microphone. Microphone monitoring always starts muted.
+1. **Power** starts the test oscillator. **Listen** enables sound.
+2. **Compare** shows eight input/output measurements together.
+3. The **linked analysis bay** adds three selectable screens. **Hold** freezes every screen together while audio continues.
+4. Load local **audio** and **MIDI**, then choose a processor. Hover or focus a control for one short tip.
 
-Audio and MIDI files stay in the browser. No account, service, or upload participates in audio processing. The app is public and requires no sign-in.
+Drag knobs around their center or vertically. Arrow keys adjust them; Shift slows dragging; double-click resets. The smaller concentric **VAR** controls make fine scale adjustments. Use headphones when listening to a microphone.
 
-## Build / preview
+Audio and MIDI stay in your browser. No account, upload, telemetry or remote processing is involved. The desktop application remains in `src/`.
 
-Install Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` **0.2.127**. No Node, npm, Python, or frontend framework is required to build or serve the app.
+## Measurements and processing
+
+All six original processors are available: pitch correction, vocoder, MIDI vocoder, eight-note MIDI harmony, MIDI pitch lock, and dry/formant shifting. Clean and isolated bitcrush modes are extra references. All four carrier waveforms, separate pitch/harmony strength and transpose, key/scale, global formant shift, bit depth, rate reduction and timed one-second bypass are retained. [Feature-by-feature audit](../docs/web-feature-parity.md).
+
+Nine main views: waveform, spectrum, spectrogram, pitch history, formant envelopes, MIDI staff score, Compare, real cepstrum and X–Y. The auxiliary screens can each show spectrum, spectrogram, pitch, envelopes, MIDI, cepstrum or X–Y. They use the same snapshot and shared Hold state.
+
+Channel sensitivity, position, AC/DC/GND, visibility, timebase and Auto/Normal/Single trigger provide oscilloscope controls. These operate on the display. **FS/div means normalized audio full scale**, not electrical volts. The three formant envelopes show original, intended shift, and actual measured output.
+
+## Build and preview
+
+Install Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` **0.2.127**. No Node, npm, Python or frontend framework is required.
 
 From `web/`:
 
@@ -20,45 +30,39 @@ cargo run --manifest-path xtask/Cargo.toml -- build
 cargo run --manifest-path xtask/Cargo.toml -- serve 3040
 ```
 
-Open `http://127.0.0.1:3040`. The server binds only to loopback. Ctrl-C stops it. `dist/` is disposable and ignored. To reuse an existing Cargo cache for both build tools and WASM, set `CARGO_TARGET_DIR` to its absolute path before these commands.
+Open `http://127.0.0.1:3040`. Ctrl-C stops the loopback-only server. `dist/` is disposable and ignored. Set `CARGO_TARGET_DIR` to an existing absolute cache path to reuse it for the build tool and both WASM modules.
 
 ```sh
 cargo test --locked
 cargo fmt -- --check
 cargo fmt --manifest-path xtask/Cargo.toml -- --check
+cargo run --example fixtures -- /tmp/dsp-viewer-fixtures
 ```
 
-The DSP dependency is pinned to a published Git revision; no sibling library checkout is needed for the web build.
+The last command generates a 16-second WAV and MIDI with an eight-note chord for manual browser checks. It does not start a server or upload files. DSP is pinned to a published Git revision; no sibling checkout is required.
 
-## GitHub Pages deployment
+## GitHub Pages
 
-The repository publishes the prebuilt `web/dist/` contents from the root of its `gh-pages` branch. Build locally with the command above, update that branch with the resulting files, and push it to `origin`. Keep the existing deployment branch's history when updating it. GitHub Pages performs the final publishing step; no cloud Rust compilation or dependency installation is needed.
-
-The build includes `.nojekyll` so GitHub serves the WASM modules and other static files directly. Asset paths are relative, including the audio worklet and its WASM fetch, so the app runs under the repository's `/synthphone-diagrams/` prefix. Source code remains on `main`; `gh-pages` contains the deployable output.
+Build locally, commit source to `main`, then copy `dist/` to the existing `gh-pages` branch and push. Preserve deployment history. GitHub Pages performs only final static publication; there is no cloud Rust build. `.nojekyll`, relative asset paths and versioned bootstrap/worklet URLs support the repository URL prefix. `version.json` identifies source commit, asset build hash and whether tracked source was dirty.
 
 ## Efficiency
 
-- Rust owns DSP, MIDI parsing, controls, plotting, and the build/server tool.
-- A minimal JavaScript `AudioWorkletProcessor` bridges browser PCM to a separate Rust WASM module with no imports. This interface requires JavaScript in the browser.
-- PCM copies use persistent WASM views. STFT state, overlap-add buffers, and the 128-sample callback are preallocated; processing allocates no heap memory.
-- 1024-point FFT, 256-sample hop, actual AudioContext rate. Clean/bypass and bitcrusher skip vocal FFT processing. Wet/dry and bypass use matched overlap-add timing with unity reconstruction.
-- Analysis runs only for the selected display, on request. Eco requests 20 snapshots/sec; normal requests 40. At most one request is outstanding. Frozen, paused, hidden, and powered-off displays request no analysis.
-- Fixed-resolution canvas and a bounded 600×256 scrolling spectrogram avoid growing histories, per-frame image allocation, and retina-driven rendering costs. Pitch history holds 240 readings.
-- Audio files are capped at 40 MB / 10 minutes; MIDI at 2 MB. MIDI is parsed and indexed on load, not per hop. Loading MIDI may briefly interrupt audio while the worklet installs its timeline.
-- No image assets, remote fonts, telemetry, or runtime dependencies. Both WASM modules and their generated glue total less than 500 KB uncompressed in the initial build.
+- Rust owns controls, plotting, MIDI parsing, DSP and the build/server. A minimal browser-required JavaScript AudioWorklet bridge copies PCM to an import-free Rust WASM module.
+- Audio processing uses preallocated fixed arrays and cached WASM views. The 128-sample callback does not allocate. STFT uses 1024 samples with a 256-sample hop.
+- Audio remains continuous while displays update at 20 Hz in Eco or 40 Hz normally. Only analyses needed by visible screens run; at most one snapshot is outstanding. Hold, pause, hidden pages and power-off stop analysis requests. Close the analysis bay to avoid its extra work.
+- Spectrograms scroll one column at a time in two 512×128 offscreen canvases. Pitch and timestamp histories cap at 512 readings. Canvas resolution is fixed independently of screen density.
+- MIDI tempo maps, chord states and target notes are prepared on the UI thread, then installed in the audio module as a compact timeline. Score rendering caps visible notes at 2,000. No MIDI parsing occurs per audio hop.
+- Local audio is limited to 512 MB and MIDI to 8 MB; there is no ten-minute cutoff. Decoded audio can use more memory than its compressed file. Loading or replacing a large timeline can briefly interrupt audio.
+- Six optimized photographic-style component assets total about 440 KB. There are no remote fonts, image requests or runtime dependencies. [Asset provenance and prompts](assets/README.md).
 
-## Scope and limitations
+## Limits and verification
 
-This is a shared-library DSP laboratory, not Virtual Daisy's ARM firmware emulator. It does not yet connect directly to Virtual Synthphone-E or Keyboard Keyboard. Effects use the pinned DSP library; that does not establish hardware or perceptual parity.
+This uses the shared Rust vocal DSP library. It is not Virtual Daisy's ARM firmware emulator and does not yet connect directly to Virtual Synthphone-E or Keyboard Keyboard. Preserving controls and processing paths does not establish hardware or perceptual equivalence.
 
-Modes: clean, pitch correction, saw-carrier vocoder, bitcrusher, up to eight MIDI harmony voices, and pitch/formant shift. Correction supports all 24 major/minor keys. MIDI tempo maps, note-off/velocity-zero events, and channel-specific note state are resolved; percussion channel 10 is excluded. MIDI format 2 is rejected, sustain pedal is not implemented. MIDI and audio loop independently. Seek restarts DSP at the corresponding MIDI time; held pitch/carrier targets reset when restarting.
+MIDI formats 0/1, tempo maps, SMPTE timing, channel-specific notes, velocity-zero note-offs and up to eight simultaneous distinct pitches are supported. Channel 10 remains available as in the original viewer. Format 2 is rejected; sustain pedal is not implemented. MIDI loops at its own duration; an audio-file loop or seek also restarts/repositions its MIDI clock. Pitch lock and MIDI carrier hold the last played target across rests, resetting on restart, seek and audio-loop boundaries. Harmony strength interpolates targets toward the source pitch in log-frequency space.
 
-The original desktop cepstrum, score view, ideal formant-envelope overlay, multi-size FFT, and MIDI track selector are not included in this first web edition. Envelope view plots measured cepstrally smoothed spectral envelopes, not a cepstrum. Spectrogram time depends on display cadence; pitch history is 240 readings (12 s in Eco, 6 s normally).
+Microphone needs HTTPS/localhost and AudioWorklet support; it starts muted and releases tracks on power-off, source change or page exit. File decoding uses browser formats and resamples to the context rate. Processing is mono. Listen has 50% gain for headroom; meters measure output before monitor gain. The adapter adds 1024 samples of delay (about 21.3 ms at 48 kHz), plus browser/device latency. FFT counts and DFT operation comparisons are estimates; no CPU percentage is claimed.
 
-Microphone requires HTTPS or localhost and a browser with AudioWorklet support. It turns off on power-off, page exit, or source change. Browser decoding handles supported audio formats and converts file playback to the context rate. Input is downmixed to mono; output is mono. Listen uses 50% output gain for headroom; the analyser measures the signal before this monitor gain. The STFT adapter contributes 1024 samples of delay (~21.3 ms at 48 kHz), in addition to browser/device buffering. Waveform voltage divisions are normalized full-scale units, not calibrated physical volts.
+Rust verification covers unity reconstruction, bounded actual output, all eight modes, MIDI timing/chords, pitch lock before/during/after a note, audio-loop target reset, global pre-effects, parameter ranges, envelope extrapolation, transient-preserving plotting and trigger edges. Browser verification covers the live signal path, effects/views, local WAV/MIDI, linked screens, keyboard knobs/tips, Hold/trigger and transport. Physical microphone/headphone listening and physical Synthphone comparison remain unverified.
 
-## Verification
-
-Rust tests cover unity-gain reconstruction, finite/bounded output in each mode, MIDI tempo-map timing and note-off, and mapping every displayed key to the DSP library's circle-of-fifths ordering. Browser QA exercises the live oscillator, effects, graph selection, freeze, and transport. These checks do not replace microphone/headphone listening or testing on a physical Synthphone.
-
-AI made · [0rwx X](https://0rwx.com/).
+[Reference-photo critique](../docs/oscilloscope-design-review.md) · AI made · [0rwx X](https://0rwx.com/).

@@ -16,7 +16,7 @@ wasm-bindgen = "=0.2.127"
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 js-sys = "=0.3.104"
 wasm-bindgen-futures = "=0.4.77"
-web-sys = { version = "=0.3.104", features = ["Window", "Document", "Element", "HtmlElement", "HtmlInputElement", "HtmlSelectElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Event", "EventTarget", "Node", "DomTokenList", "MessageEvent", "MessagePort", "Response", "Performance", "AudioContext", "AudioContextOptions", "AudioWorklet", "AudioWorkletNode", "AudioWorkletNodeOptions", "AudioNode", "AudioDestinationNode", "GainNode", "AudioParam", "AudioBuffer", "AudioBufferSourceNode", "AudioScheduledSourceNode", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaStreamAudioSourceNode", "File", "FileList", "Blob", "ImageData", "console"] }
+web-sys = { version = "=0.3.104", features = ["Window", "Document", "Element", "HtmlElement", "DomRect", "PointerEvent", "KeyboardEvent", "WheelEvent", "AddEventListenerOptions", "HtmlButtonElement", "HtmlInputElement", "HtmlSelectElement", "HtmlCanvasElement", "CanvasRenderingContext2d", "Event", "EventTarget", "NodeList", "Node", "DomTokenList", "MessageEvent", "MessagePort", "Response", "Performance", "OscillatorNode", "PeriodicWave", "AudioContext", "AudioContextOptions", "AudioWorklet", "AudioWorkletNode", "AudioWorkletNodeOptions", "AudioNode", "AudioDestinationNode", "GainNode", "AudioParam", "AudioBuffer", "AudioBufferSourceNode", "AudioScheduledSourceNode", "MediaDevices", "Navigator", "MediaStream", "MediaStreamConstraints", "MediaStreamTrack", "MediaStreamAudioSourceNode", "File", "FileList", "Blob", "ImageData", "console"] }
 [profile.release]
 opt-level = "s"
 lto = true
