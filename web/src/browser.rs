@@ -171,10 +171,7 @@ fn params() {
         value("frequency"),
         value("mix"),
         if bypass { 1. } else { 0. },
-        crate::key::library_key(
-            select("key").selected_index() as usize,
-            select("scale").value() == "12",
-        ) as f32,
+        crate::key::library_key(value("key") as usize, input("scale").value() == "12") as f32,
         value("speed"),
         value("carrier"),
         value("harmony-strength"),
@@ -734,6 +731,17 @@ pub fn mount() {
             params();
         });
     }
+    for scale in ["0", "12"] {
+        let target = doc()
+            .query_selector(&format!("[data-scale='{scale}']"))
+            .unwrap()
+            .unwrap();
+        bind(target.as_ref(), "click", move |_| {
+            input("scale").set_value(scale);
+            button_bank("data-scale", scale);
+            params();
+        });
+    }
     for view in 0..9 {
         let target = doc()
             .query_selector(&format!("[data-view='{view}']"))
@@ -905,12 +913,8 @@ pub fn mount() {
                 let mut mask = crate::scope_math::analysis_mask(a.view);
                 if !el("analysis-bay").has_attribute("hidden") {
                     for i in 0..3 {
-                        mask |= crate::scope_math::analysis_mask(
-                            select(&format!("aux-view-{i}"))
-                                .value()
-                                .parse()
-                                .unwrap_or(0),
-                        );
+                        mask |=
+                            crate::scope_math::analysis_mask(value(&format!("aux-view-{i}")) as u8);
                     }
                 }
                 Some((mask, a.request))

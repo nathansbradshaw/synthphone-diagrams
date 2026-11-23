@@ -205,19 +205,19 @@ impl Display {
         for i in 0..3 {
             let c = ctx(&canvas(&format!("aux-{i}")));
             c.clear_rect(0., 0., 600., 400.);
-            c.set_font("18px monospace");
+            c.set_font("26px monospace");
             lattice(&c, r, 10, 6);
             if !live {
                 label(&c, "POWER OFF", 228., 205.);
                 continue;
             }
-            match select(&format!("aux-view-{i}")).value().as_str() {
-                "1" => self.spectrum(&c, r, s, sr, true),
-                "2" => self.spectrograms(&c, r),
-                "3" => self.pitch(&c, r),
-                "4" => self.envelopes(&c, r, s, sr),
-                "5" => draw_midi(&c, r, midi, s[META + 10] as f64, s[META + 6]),
-                "7" => self.cepstrum(&c, r, s, sr),
+            match value(&format!("aux-view-{i}")) as u8 {
+                1 => self.spectrum(&c, r, s, sr, true),
+                2 => self.spectrograms(&c, r),
+                3 => self.pitch(&c, r),
+                4 => self.envelopes(&c, r, s, sr),
+                5 => draw_midi(&c, r, midi, s[META + 10] as f64, s[META + 6]),
+                7 => self.cepstrum(&c, r, s, sr),
                 _ => self.xy(&c, r, s),
             }
         }
@@ -378,7 +378,7 @@ impl Display {
             c.fill_rect(0., 0., 1000., 800.);
             let _ = c.set_global_composite_operation("source-over");
         }
-        c.set_font("15px monospace");
+        c.set_font("24px monospace");
         c.set_line_width(1.5);
         c.set_shadow_color("#5cffcb");
         c.set_shadow_blur(self.settings.intensity * 3.);
@@ -632,7 +632,7 @@ impl Display {
             }
         }
         let _ = c.set_line_dash(&Array::new());
-        label(c, "Original / Ideal (dashed) / Measured", r.x, r.y - 12.);
+        label(c, "Original / Ideal / Measured", r.x, r.y - 12.);
     }
     fn spectrograms(&self, c: &CanvasRenderingContext2d, r: Area) {
         for ch in 0..2 {
@@ -660,7 +660,7 @@ impl Display {
         };
         label(
             c,
-            &format!("{duration:.1} s history · log frequency · 20 Hz to Nyquist"),
+            &format!("{duration:.1} s · log Hz"),
             r.x,
             r.y + r.h + 22.,
         );
@@ -914,12 +914,7 @@ impl Display {
             0,
         );
         c.restore();
-        label(
-            c,
-            "X: input · Y: processed output · time-aligned",
-            r.x + 5.,
-            r.y + r.h + 22.,
-        );
+        label(c, "X: input · Y: output", r.x + 5., r.y + r.h + 22.);
     }
 }
 fn spectrum_line(c: &CanvasRenderingContext2d, r: Area, m: &[f32], sr: f32, ch: usize) {
