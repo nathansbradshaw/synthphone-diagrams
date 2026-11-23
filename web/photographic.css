@@ -157,6 +157,58 @@ fieldset,.crt-adjustments{border:1px solid #5c65555c;box-shadow:none;border-radi
 .instrument,.bench>.analysis-bay{border-image-source:image-set(url('./assets/enclosure.avif') type('image/avif'),url('./assets/enclosure.webp') type('image/webp'))}
 .crt-hood,.aux-hood{background-image:image-set(url('./assets/crt.avif') type('image/avif'),url('./assets/crt.webp') type('image/webp'))}
 
+/* Screen inspection uses the existing cap and CRT materials. */
+.screen-tools{padding:8px 0 10px;margin:0 0 8px;border-bottom:1px solid #6d6c5655;color:#303a2d}
+.inspection-buttons{display:flex;flex-wrap:wrap;gap:5px;justify-content:center}
+#inspection-readout{display:block;min-height:2.5em;margin-top:7px;font:11px/1.5 'Courier New',monospace;overflow-wrap:anywhere}
+#capture-status{display:block;font:11px Arial;min-height:0}
+#capture-status:empty{display:none}
+#scope,.aux-hood canvas{cursor:zoom-in;pointer-events:auto}
+html[data-cursors=true] #scope,html[data-cursors=true] .aux-hood canvas{cursor:crosshair;touch-action:none}
+#scope:focus-visible,.aux-hood canvas:focus-visible{outline:2px solid #d2c29b;outline-offset:3px}
+#screen-dialog{border-image:none;border:1px solid #877e65;border-radius:6px;background:#c9bfa0;padding:10px;width:min(1200px,96vw);max-width:96vw;max-height:96dvh;overflow:auto;filter:none;color:#29382d;box-shadow:0 12px 50px #0009}
+#screen-dialog::backdrop{background:#111d;backdrop-filter:blur(3px)}
+#screen-dialog .screen-dialog-header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:5px}
+#screen-dialog h2{font:600 13px Arial;margin:0}
+#screen-socket{display:flex;justify-content:center}
+#screen-socket>.crt-hood{width:min(100%,1000px);aspect-ratio:1.25;padding:min(11.8%,118px) min(11%,110px) min(10.7%,107px) min(10.2%,102px);margin:0}
+#screen-socket>.aux-hood{width:min(100%,1000px);aspect-ratio:1.5;padding:8% 9%;margin:0}
+#screen-dialog .screen-tools{margin:5px 0 0;border:0;padding:0}
+@media(max-width:720px){#inspection-readout{font-size:10px}.inspection-buttons{gap:4px}.screen-tools{padding-top:4px}#screen-dialog{padding:7px}}
+
+/* One local access point per screen; inspection controls stay tucked away. */
+.aux-hood{position:relative}
+button.inspect-launcher:not(.bnc):not(.power-rocker):not(.flat-button),.instrument button.inspect-launcher:not(.bnc):not(.power-rocker):not(.flat-button){position:absolute;right:2%;bottom:1.2%;width:76px;height:26px;min-height:26px;padding:2px;border:1px solid #9c9279;border-radius:3px;background:transparent url('./assets/button.webp') center/122% 169% no-repeat;box-shadow:inset 0 1px #fff0c56b,0 1px 2px #5c543a55;font:600 10px Arial;color:#30382d;cursor:pointer}
+.screen-meter{position:absolute;left:0;right:0;bottom:-25px;height:23px;text-align:center;font:10px/1.5 'Courier New',monospace;color:#30382d;overflow-wrap:anywhere}
+.screen-meter:empty{display:none}
+.crt-hood:has(.screen-meter:not(:empty)),.aux-hood:has(.screen-meter:not(:empty)){margin-bottom:30px}
+#inspection-home{position:fixed;z-index:900;width:280px;max-width:calc(100vw - 16px);max-height:calc(100dvh - 16px);overflow:auto;margin:0;padding:10px;border:1px solid #8e8264;border-image:none;border-radius:5px;background:#ddd0ad;filter:none;box-shadow:0 6px 20px #0006;color:#30382d}
+#inspection-home[hidden]{display:none}
+#inspection-home .inspection-heading{display:flex;align-items:center;justify-content:space-between;gap:6px}
+#inspection-home h2{font:600 11px Arial;margin:0}
+#inspection-home .screen-tools{margin:0;padding:0;border:0}
+#inspection-home fieldset{margin:8px 0 0;padding:6px;border-color:#96896c77}
+#inspection-home legend{font-size:10px}
+#inspection-home .inspection-buttons{display:grid;grid-template-columns:repeat(3,76px);gap:5px}
+#inspection-home button:not(.bnc):not(.power-rocker):not(.flat-button){width:76px;min-height:32px;height:32px;font-size:10px;padding:2px}
+#inspection-home #inspection-readout{font-size:10px;line-height:1.6;margin:8px 0 0}
+#screen-dialog #inspection-home{position:fixed;margin:0;max-height:calc(100dvh - 16px)}
+@media(max-width:430px){.screen-meter{font-size:9px}.crt-hood:has(.screen-meter:not(:empty)),.aux-hood:has(.screen-meter:not(:empty)){margin-bottom:38px}.screen-meter{height:34px;bottom:-36px}}
+
+.display-column>.main-screen{grid-column:1;grid-row:1;width:100%;min-width:0}
+.main-screen>.crt-hood{width:100%;max-width:800px;padding:min(11.8%,94.4px) min(11%,88px) min(10.7%,85.6px) min(10.2%,81.6px);margin-left:0;margin-right:0}
+.screen-label,.aux-unit h2{display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:32px;margin:0 3px 5px;font:600 11px Arial;letter-spacing:.04em;color:#303a2d}
+button.inspect-launcher:not(.bnc):not(.power-rocker):not(.flat-button),.instrument button.inspect-launcher:not(.bnc):not(.power-rocker):not(.flat-button){position:relative;right:auto;bottom:auto;width:76px;height:28px;min-height:28px;flex:none}
+#screen-dialog .screen-dialog-header h2{flex:1}
+@media(max-width:600px){
+ .bench>.analysis-bay{grid-template-columns:1fr;gap:12px}
+ .aux-unit{display:grid;grid-template-columns:minmax(0,1fr) 80px;gap:4px 6px;align-items:center}
+ .aux-unit h2{grid-column:1/-1;font-size:10px}
+ .aux-selector{grid-column:2;grid-row:2;margin:0;--size:78px}
+ .aux-selector .knob-value{font-size:10px;white-space:normal}
+ .aux-unit .aux-hood{grid-column:1;grid-row:2}
+}
+
 /* Keep the large CRT, and put its selectors in the unused space beside it. */
 body{padding:16px 12px 24px}
 .bench{max-width:1120px}

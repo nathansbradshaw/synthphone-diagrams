@@ -9,6 +9,8 @@ mod browser;
 #[cfg(all(target_arch = "wasm32", feature = "browser"))]
 pub use browser::mount;
 #[cfg(any(test, all(target_arch = "wasm32", feature = "browser")))]
+mod inspection_math;
+#[cfg(any(test, all(target_arch = "wasm32", feature = "browser")))]
 mod scope_math;
 #[cfg(all(target_arch = "wasm32", not(feature = "browser")))]
 mod worklet;

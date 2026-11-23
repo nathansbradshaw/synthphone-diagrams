@@ -5,6 +5,7 @@ use wasm_bindgen::{JsCast, prelude::*};
 use wasm_bindgen_futures::{JsFuture, spawn_local};
 use web_sys::*;
 mod controls;
+mod inspection;
 mod scope;
 mod tips;
 thread_local! {static APP:RefCell<App>=RefCell::new(App::default());}
@@ -582,10 +583,12 @@ fn draw() {
         text("freeze", "SINGLE HELD");
         text("screen-state", "HOLD");
     }
+    inspection::sync(APP.with_borrow(|a| a.frozen));
 }
 #[wasm_bindgen]
 pub fn mount() {
     controls::mount();
+    inspection::mount();
     for id in ["source", "effect"] {
         el(id).set_attribute("tabindex", "-1").unwrap();
         el(id).set_attribute("aria-hidden", "true").unwrap();
