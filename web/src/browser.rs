@@ -383,6 +383,7 @@ fn stop() {
         a.gain = None;
         a.playing = false;
         a.busy = false;
+        a.frozen = false;
         a.pending = false;
         a.request = a.request.wrapping_add(1);
         a.context.take()
@@ -391,6 +392,8 @@ fn stop() {
         let _ = c.close();
     }
     text("power", "POWER ON");
+    el("freeze").set_attribute("aria-pressed", "false").unwrap();
+    text("freeze", "HOLD TRACE");
     let _ = el("power").set_attribute("aria-pressed", "false");
     let _ = el("power-led").class_list().remove_1("on");
     let _ = el_instrument().class_list().remove_1("powered");
