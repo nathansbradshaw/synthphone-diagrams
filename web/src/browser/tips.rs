@@ -44,7 +44,6 @@ fn tip(e: &Element) -> Option<&'static str> {
         "env-ideal" => "Show the intended envelope after formant shifting.",
         "env-actual" => "Show the envelope measured from actual output.",
         "show-a" | "show-b" => "Show or hide this channel's plotted traces.",
-        "analysis-toggle" => "Show or hide the three additional displays.",
         "aux-view-0" | "aux-view-1" | "aux-view-2" => {
             "Choose a measurement for this linked screen."
         }
