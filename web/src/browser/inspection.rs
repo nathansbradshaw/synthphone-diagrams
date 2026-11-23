@@ -1,7 +1,7 @@
 //! Screen interaction and calibrated overlays. No extra audio/FFT work is requested.
 use super::scope::Area;
 use super::*;
-use crate::inspection_math::{Axis, View, period_hz};
+use crate::inspection_math::{Axis, View, nearest_vertex, period_hz};
 
 pub(super) const TIME: usize = 0;
 pub(super) const FREQUENCY: usize = 1;
@@ -25,11 +25,23 @@ struct Point {
     levels: [Option<f64>; 2],
     unit: &'static str,
     pixel: [f64; 2],
+    trace: Option<&'static str>,
+    axis_index: usize,
+}
+struct Trace {
+    plot: usize,
+    name: &'static str,
+    axis: Axis,
+    axis_index: usize,
+    points: Vec<[f64; 2]>,
 }
 #[derive(Default)]
 struct State {
     screen: usize,
     plots: [Vec<Plot>; 4],
+    traces: [Vec<Trace>; 4],
+    drawing_plot: usize,
+    snap: bool,
     views: [[View; 4]; 4],
     active: usize,
     plot: usize,
@@ -87,6 +99,7 @@ pub(super) fn start(screen: usize) {
     STATE.with_borrow_mut(|s| {
         s.screen = screen;
         s.plots[screen].clear();
+        s.traces[screen].clear();
         if let Some(c) = &s.overlays[screen] {
             c.clear_rect(0., 0., 1000., 800.);
         }
@@ -106,6 +119,12 @@ fn register(s: &mut State, plot: Plot) {
 pub(super) fn begin(c: &CanvasRenderingContext2d, plot: Plot) {
     let view = STATE.with_borrow_mut(|s| {
         register(s, plot);
+        s.drawing_plot = s.plots[s.screen]
+            .iter()
+            .position(|p| {
+                p.area.x == plot.area.x && p.area.y == plot.area.y && p.domain == plot.domain
+            })
+            .unwrap();
         s.views[s.screen][plot.domain]
     });
     let r = plot.area;
@@ -120,6 +139,47 @@ pub(super) fn begin(c: &CanvasRenderingContext2d, plot: Plot) {
 pub(super) fn end(c: &CanvasRenderingContext2d) {
     c.restore();
 }
+pub(super) fn snapping() -> bool {
+    STATE.with_borrow(|s| s.snap)
+}
+/// Cache geometry from the same samples used to paint the trace, before zoom.
+/// Pointer movement reads this cache; it never asks for another FFT or capture.
+pub(super) fn trace(
+    points: impl Iterator<Item = (f64, f64)>,
+    channel: usize,
+    name: Option<&'static str>,
+) {
+    STATE.with_borrow_mut(|s| {
+        if !s.snap {
+            return;
+        }
+        let plot = s.drawing_plot;
+        let p = s.plots[s.screen][plot];
+        let axis_index = if p.y[1].is_some() { channel } else { 0 };
+        let axis = p.y[axis_index];
+        let Some(axis) = axis else {
+            return;
+        };
+        let points: Vec<_> = points
+            .map(|(x, y)| [(x - p.area.x) / p.area.w, (y - p.area.y) / p.area.h])
+            .collect();
+        if !points.is_empty() {
+            s.traces[s.screen].push(Trace {
+                plot,
+                axis,
+                axis_index,
+                name: name.unwrap_or(if p.domain == INPUT {
+                    "X–Y"
+                } else if channel == 0 {
+                    "CH1"
+                } else {
+                    "CH2"
+                }),
+                points,
+            });
+        }
+    });
+}
 // Register a plot whose raster image is cropped directly instead of transformed.
 pub(super) fn raster(plot: Plot) -> View {
     STATE.with_borrow_mut(|s| {
@@ -133,7 +193,9 @@ fn label(c: &CanvasRenderingContext2d, text: &str, x: f64, y: f64) {
 }
 fn fmt(v: f64, unit: &str) -> String {
     if unit == "s" && v.abs() < 1. {
-        format!("{:.2} ms", v * 1000.)
+        format!("{:.3} ms", v * 1000.)
+    } else if unit == "s" {
+        format!("{v:.6} s")
     } else if unit == "Hz" && v.abs() >= 1000. {
         format!("{:.2} kHz", v / 1000.)
     } else {
@@ -167,7 +229,8 @@ fn point_text(p: Point, s: &State) -> String {
         .collect::<Vec<_>>()
         .join(" / ");
     format!(
-        "{}{}{}",
+        "{}{}{}{}",
+        p.trace.map(|t| format!("{t} · ")).unwrap_or_default(),
         fmt(p.x, x_unit(p.domain)),
         if values.is_empty() { "" } else { " · " },
         values
@@ -313,7 +376,7 @@ fn paint_screen(screen: usize) {
                 if point.screen == screen && point.plot == index && point.unit == p.unit {
                     let y = r.y
                         + point.levels[0]
-                            .zip(p.y[0])
+                            .zip(p.y[point.axis_index])
                             .map(|(v, a)| 1. - a.fraction(v))
                             .unwrap_or(point.y)
                             * r.h;
@@ -335,6 +398,12 @@ fn paint_screen(screen: usize) {
                 c.move_to(r.x, y);
                 c.line_to(r.x + r.w, y);
                 c.stroke();
+                if point.trace.is_some() {
+                    c.set_line_dash(&Array::new()).unwrap();
+                    c.begin_path();
+                    let _ = c.arc(x, y, 5., 0., std::f64::consts::TAU);
+                    c.stroke();
+                }
             }
             c.restore();
             let point = hover.filter(|pt| pt.plot == index).or_else(|| {
@@ -364,7 +433,16 @@ fn live_label(
     s: &State,
     screen: usize,
 ) {
-    let mut lines = vec![format!("X {}", fmt(point.x, x_unit(point.domain)))];
+    let mut lines = Vec::new();
+    if s.snap {
+        lines.push(
+            point
+                .trace
+                .map(|t| format!("SNAP {t}"))
+                .unwrap_or_else(|| "NO TRACE · FREE".into()),
+        );
+    }
+    lines.push(format!("X {}", fmt(point.x, x_unit(point.domain))));
     for (ch, level) in point.levels.iter().enumerate() {
         if let Some(level) = level {
             lines.push(format!(
@@ -434,7 +512,7 @@ fn point_at(s: &State, screen: usize, x: f64, y: f64) -> Option<Point> {
         if x < r.x || x > r.x + r.w || y < r.y || y > r.y + r.h {
             return None;
         }
-        Some(Point {
+        let point = Point {
             screen,
             plot: index,
             domain: p.domain,
@@ -443,8 +521,54 @@ fn point_at(s: &State, screen: usize, x: f64, y: f64) -> Option<Point> {
             levels: p.y.map(|a| a.map(|a| a.at(1. - (y - r.y) / r.h))),
             unit: p.unit,
             pixel: [x, y],
+            trace: None,
+            axis_index: 0,
+        };
+        Some(if s.snap {
+            snap_point(s, point, 0)
+        } else {
+            point
         })
     })
+}
+fn snap_point(s: &State, mut point: Point, direction: i8) -> Point {
+    let p = s.plots[point.screen][point.plot];
+    let view = s.views[point.screen][p.domain];
+    let pointer = [p.x.slice(view).fraction(point.x), point.y];
+    let candidate = s.traces[point.screen]
+        .iter()
+        .filter(|t| t.plot == point.plot)
+        .filter(|t| direction == 0 || point.trace.is_none_or(|name| name == t.name))
+        .filter_map(|t| {
+            nearest_vertex(
+                &t.points,
+                pointer,
+                view,
+                [p.area.w, p.area.h],
+                p.domain == INPUT,
+                direction,
+            )
+            .map(|(i, d)| (t, i, d))
+        })
+        .min_by(|a, b| {
+            if direction != 0 {
+                (a.0.points[a.1][0] - p.x.fraction(point.x))
+                    .abs()
+                    .total_cmp(&(b.0.points[b.1][0] - p.x.fraction(point.x)).abs())
+                    .then(a.2.total_cmp(&b.2))
+            } else {
+                a.2.total_cmp(&b.2)
+            }
+        });
+    if let Some((trace, index, _)) = candidate {
+        let vertex = trace.points[index];
+        point.x = p.x.at(vertex[0]);
+        point.y = vertex[1];
+        point.levels = [Some(trace.axis.at(1. - vertex[1])), None];
+        point.trace = Some(trace.name);
+        point.axis_index = trace.axis_index;
+    }
+    point
 }
 fn cursor_place(point: Point) {
     STATE.with_borrow_mut(|s| {
@@ -497,6 +621,9 @@ fn restore() {
     }
 }
 pub(super) fn sync(frozen: bool) {
+    el("screen-snap")
+        .set_attribute("aria-pressed", if snapping() { "true" } else { "false" })
+        .unwrap();
     for (i, id) in ["cursor-a", "cursor-b"].into_iter().enumerate() {
         let _ = el(id).set_attribute(
             "aria-pressed",
@@ -764,6 +891,7 @@ pub(super) fn mount() {
         ("screen-enlarge", "E"),
         ("screen-hold", "H Space"),
         ("screen-save", "S"),
+        ("screen-snap", "N"),
     ] {
         let _ = el(id).set_attribute("aria-keyshortcuts", key);
     }
@@ -789,6 +917,12 @@ pub(super) fn mount() {
         el("screen-cursors")
             .set_attribute("aria-pressed", if on { "true" } else { "false" })
             .unwrap();
+        draw();
+    });
+    bind(el("screen-snap").as_ref(), "click", |_| {
+        STATE.with_borrow_mut(|s| s.snap = !s.snap);
+        // Rebuild geometry even for a held capture. Existing A/B remain captured
+        // measurements until the user moves or replaces them.
         draw();
     });
     for (index, id) in ["cursor-a", "cursor-b"].into_iter().enumerate() {
@@ -915,6 +1049,7 @@ pub(super) fn mount() {
                 return;
             }
             "c" => "screen-cursors",
+            "n" => "screen-snap",
             "a" => "cursor-a",
             "b" => "cursor-b",
             "h" | " " => "screen-hold",
@@ -1053,22 +1188,52 @@ pub(super) fn mount() {
                                     plot.area.x + plot.area.w * 0.5,
                                     plot.area.y + plot.area.h * 0.5,
                                 ],
+                                trace: None,
+                                axis_index: 0,
                             });
-                        if let Some((level, axis)) = p.levels[0].zip(plot.y[0]) {
+                        if let Some((level, axis)) = p.levels[0].zip(plot.y[p.axis_index]) {
                             p.y = (1. - axis.fraction(level)).clamp(0., 1.);
                         }
                         let step = if e.shift_key() { 0.001 } else { 0.01 };
-                        match e.key().as_str() {
-                            "ArrowLeft" => p.x = axis.at((axis.fraction(p.x) - step).clamp(0., 1.)),
-                            "ArrowRight" => {
-                                p.x = axis.at((axis.fraction(p.x) + step).clamp(0., 1.))
+                        let direction = if s.snap && p.trace.is_some() {
+                            match e.key().as_str() {
+                                "ArrowLeft" => -1,
+                                "ArrowRight" => 1,
+                                _ => 0,
                             }
+                        } else {
+                            0
+                        };
+                        match e.key().as_str() {
+                            "ArrowLeft" if direction == 0 => {
+                                p.x = axis.at((axis.fraction(p.x) - step).clamp(0., 1.))
+                            }
+                            "ArrowRight" => {
+                                if direction == 0 {
+                                    p.x = axis.at((axis.fraction(p.x) + step).clamp(0., 1.))
+                                }
+                            }
+                            "ArrowLeft" => {}
                             "ArrowUp" => p.y = (p.y - step).max(0.),
                             _ => p.y = (p.y + step).min(1.),
                         }
                         s.enabled = true;
-                        p.levels = plot.y.map(|a| a.map(|a| a.at(1. - p.y)));
+                        if direction == 0 {
+                            p.levels = plot.y.map(|a| a.map(|a| a.at(1. - p.y)));
+                        }
+                        if s.snap {
+                            p = snap_point(s, p, direction);
+                        } else {
+                            p.trace = None;
+                            p.axis_index = 0;
+                        }
                         s.cursors[s.selected] = Some(p);
+                        s.hover = None;
+                        p.pixel = [
+                            plot.area.x + axis.fraction(p.x) * plot.area.w,
+                            plot.area.y + p.y * plot.area.h,
+                        ];
+                        s.anchor = Some(p);
                     });
                     el("screen-cursors")
                         .set_attribute("aria-pressed", "true")

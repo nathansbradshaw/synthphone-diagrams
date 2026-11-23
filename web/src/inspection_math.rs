@@ -6,6 +6,13 @@ pub struct Axis {
     pub log: bool,
 }
 impl Axis {
+    /// Eight vertical divisions; a positive position moves the zero line up.
+    pub fn waveform(sensitivity: f64, position: f64) -> Self {
+        Self::linear(
+            (-4. - position) * sensitivity,
+            (4. - position) * sensitivity,
+        )
+    }
     pub fn linear(lo: f64, hi: f64) -> Self {
         Self { lo, hi, log: false }
     }
@@ -65,9 +72,117 @@ impl View {
 pub fn period_hz(seconds: f64) -> Option<f64> {
     (seconds.is_finite() && seconds.abs() > 1e-9).then(|| 1. / seconds.abs())
 }
+/// Find a visible, finite trace vertex. Ordinary plots preserve the nearest
+/// sample/bin on X; X–Y plots use distance in screen pixels instead.
+pub fn nearest_vertex(
+    points: &[[f64; 2]],
+    pointer: [f64; 2],
+    view: View,
+    size: [f64; 2],
+    xy: bool,
+    direction: i8,
+) -> Option<(usize, f64)> {
+    points
+        .iter()
+        .enumerate()
+        .filter_map(|(index, p)| {
+            let x = (p[0] - view.start()) * view.zoom;
+            if !x.is_finite()
+                || !p[1].is_finite()
+                || !(0. ..=1.).contains(&x)
+                || !(0. ..=1.).contains(&p[1])
+            {
+                return None;
+            }
+            let dx = x - pointer[0];
+            if direction != 0 && dx * direction as f64 <= 1e-10 {
+                return None;
+            }
+            let dy = (p[1] - pointer[1]) * size[1];
+            Some((index, dx.abs(), dx * dx * size[0] * size[0] + dy * dy))
+        })
+        .min_by(|a, b| {
+            if xy {
+                a.2.total_cmp(&b.2)
+            } else {
+                a.1.total_cmp(&b.1).then(a.2.total_cmp(&b.2))
+            }
+        })
+        .map(|(index, _, distance)| (index, distance))
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn waveform_position_does_not_change_measured_signal_level() {
+        // The default CH1 zero line is at 33.125% from the top; CH2 at 66.875%.
+        assert!(Axis::waveform(0.2, 1.35).at(1. - 0.33125).abs() < 1e-12);
+        assert!(Axis::waveform(0.2, -1.35).at(1. - 0.66875).abs() < 1e-12);
+        // A 0.2 FS sample sits exactly one division above either zero line.
+        assert!((Axis::waveform(0.2, 1.35).at(1. - 0.20625) - 0.2).abs() < 1e-12);
+        assert!((Axis::waveform(0.2, -1.35).at(1. - 0.54375) - 0.2).abs() < 1e-12);
+    }
+    #[test]
+    fn snap_uses_real_vertices_and_skips_clipped_or_invalid_samples() {
+        let points = [[0.2, 0.9], [0.4, 0.3], [0.6, 1.2], [f64::NAN, 0.5]];
+        let (i, _) = nearest_vertex(
+            &points,
+            [0.43, 0.95],
+            View::default(),
+            [100., 100.],
+            false,
+            0,
+        )
+        .unwrap();
+        assert_eq!(i, 1); // nearest X, not a fabricated point under the pointer
+        let view = View {
+            zoom: 2.,
+            center: 0.5,
+        };
+        assert_eq!(
+            nearest_vertex(&points, [0., 0.5], view, [100., 100.], false, 0)
+                .unwrap()
+                .0,
+            1
+        );
+        assert!(nearest_vertex(&[], [0.5, 0.5], view, [100., 100.], false, 0).is_none());
+    }
+    #[test]
+    fn xy_snap_uses_two_dimensional_distance_and_arrows_advance_samples() {
+        let points = [[0.2, 0.2], [0.4, 0.9], [0.6, 0.3]];
+        assert_eq!(
+            nearest_vertex(
+                &points,
+                [0.39, 0.25],
+                View::default(),
+                [100., 100.],
+                true,
+                0
+            )
+            .unwrap()
+            .0,
+            0
+        );
+        assert_eq!(
+            nearest_vertex(&points, [0.4, 0.9], View::default(), [100., 100.], false, 1)
+                .unwrap()
+                .0,
+            2
+        );
+        assert_eq!(
+            nearest_vertex(
+                &points,
+                [0.4, 0.9],
+                View::default(),
+                [100., 100.],
+                false,
+                -1
+            )
+            .unwrap()
+            .0,
+            0
+        );
+    }
     #[test]
     fn calibrated_linear_and_log_axes_round_trip() {
         for axis in [

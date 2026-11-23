@@ -2,7 +2,7 @@ use super::inspection::{self, FREQUENCY, INPUT, PERIOD, Plot, TIME};
 use super::*;
 use crate::engine::*;
 use crate::inspection_math::Axis;
-use crate::scope_math::{decimate_extrema, midi_staff_step, note_name, trigger_index};
+use crate::scope_math::{midi_staff_step, note_name, trigger_index};
 #[derive(Clone)]
 pub(super) struct Settings {
     pub time: f64,
@@ -147,11 +147,15 @@ fn label(c: &CanvasRenderingContext2d, s: &str, x: f64, y: f64) {
     let _ = c.fill_text(s, x, y);
 }
 fn stroke(c: &CanvasRenderingContext2d, points: impl Iterator<Item = (f64, f64)>, ch: usize) {
+    let mut trace = inspection::snapping().then(Vec::new);
     c.set_stroke_style_str(if ch == 0 { "#72ffe0" } else { "#a6ffb2" });
     c.set_line_width(1.65);
     c.begin_path();
     let mut first = true;
     for (x, y) in points {
+        if let Some(points) = &mut trace {
+            points.push((x, y));
+        }
         if first {
             c.move_to(x, y);
             first = false;
@@ -160,6 +164,9 @@ fn stroke(c: &CanvasRenderingContext2d, points: impl Iterator<Item = (f64, f64)>
         }
     }
     c.stroke();
+    if let Some(points) = trace {
+        inspection::trace(points.into_iter(), ch, None);
+    }
 }
 fn line(c: &CanvasRenderingContext2d, x: f64, y: f64, x2: f64, y2: f64) {
     c.begin_path();
@@ -505,12 +512,8 @@ impl Display {
             end - (WAVE - start) as f64 / sr as f64,
             end - (WAVE - start - count + usize::from(channel.is_some())) as f64 / sr as f64,
         );
-        let axis = |ch: usize| {
-            Axis::linear(
-                (-4. + self.settings.position[ch]) * self.settings.sensitivity[ch],
-                (4. + self.settings.position[ch]) * self.settings.sensitivity[ch],
-            )
-        };
+        let axis =
+            |ch: usize| Axis::waveform(self.settings.sensitivity[ch], self.settings.position[ch]);
         let y = if let Some(ch) = channel {
             [Some(axis(ch)), None]
         } else {
@@ -612,26 +615,22 @@ impl Display {
             let zero = r.y + r.h / 2. - self.settings.position[channel] * r.h / 8.;
             let sensitivity = self.settings.sensitivity[channel];
             let ground = self.settings.coupling[channel] == 2;
-            let bins = decimate_extrema(data, r.w as usize);
-            c.set_stroke_style_str(if channel == 0 { "#72ffe0" } else { "#a6ffb2" });
-            c.set_line_width(1.5);
-            c.begin_path();
-            for (i, (lo, hi)) in bins.iter().enumerate() {
-                let x = r.x + r.w * i as f64 / bins.len().max(1) as f64;
-                let a = if ground { 0. } else { *lo - ac };
-                let b = if ground { 0. } else { *hi - ac };
-                let y1 = zero - a as f64 * r.h / (8. * sensitivity);
-                let y2 = zero - b as f64 * r.h / (8. * sensitivity);
-                if i == 0 {
-                    c.move_to(x, y1);
-                } else {
-                    c.line_to(x, y1);
-                }
-                if (y2 - y1).abs() > 0.6 {
-                    c.line_to(x, y2);
-                }
-            }
-            c.stroke();
+            // At most 1024 samples: draw their exact positions so a snapped
+            // cursor and the visible waveform share the same sample clock.
+            stroke(
+                c,
+                data.iter().enumerate().map(|(i, v)| {
+                    (
+                        r.x + r.w * i as f64 / count as f64,
+                        zero - if ground {
+                            0.
+                        } else {
+                            (*v - ac) as f64 * r.h / (8. * sensitivity)
+                        },
+                    )
+                }),
+                channel,
+            );
         }
         inspection::end(c);
         c.restore();
@@ -683,6 +682,7 @@ impl Display {
                 });
                 c.begin_path();
                 let mut first = true;
+                let mut trace = inspection::snapping().then(Vec::new);
                 for bin in 1..512 {
                     let hz = bin as f64 * sr as f64 / 1024.;
                     if hz < 20. {
@@ -691,6 +691,9 @@ impl Display {
                     let x = r.x + (hz / 20.).ln() / ((sr as f64 / 2.) / 20.).ln() * r.w;
                     let y =
                         r.y + r.h - ((db(s[offset + bin] / 256.) + 90.) / 90.).clamp(0., 1.) * r.h;
+                    if let Some(points) = &mut trace {
+                        points.push((x, y));
+                    }
                     if first {
                         c.move_to(x, y);
                         first = false;
@@ -699,6 +702,13 @@ impl Display {
                     }
                 }
                 c.stroke();
+                if let Some(points) = trace {
+                    inspection::trace(
+                        points.into_iter(),
+                        0,
+                        Some(["Original", "Ideal", "Measured"][i]),
+                    );
+                }
             }
         }
         let _ = c.set_line_dash(&Array::new());
@@ -776,10 +786,14 @@ impl Display {
         c.set_stroke_style_str("#c9d9a5");
         c.begin_path();
         let mut first = true;
+        let mut trace = inspection::snapping().then(Vec::new);
         for p in &self.history {
             if p.target > 50. {
                 let x = r.x + (p.time - start) / span * r.w;
                 let y = r.y + r.h - ((p.target as f64 / 55.).log2() / 5.).clamp(0., 1.) * r.h;
+                if let Some(points) = &mut trace {
+                    points.push((x, y));
+                }
                 if first {
                     c.move_to(x, y);
                     first = false;
@@ -789,6 +803,9 @@ impl Display {
             }
         }
         c.stroke();
+        if let Some(points) = trace {
+            inspection::trace(points.into_iter(), 0, Some("Target"));
+        }
         let _ = c.set_line_dash(&Array::new());
         inspection::end(c);
     }
@@ -889,11 +906,15 @@ impl Display {
                         c.set_stroke_style_str("#d7d49d");
                         c.begin_path();
                         let mut first = true;
+                        let mut trace = inspection::snapping().then(Vec::new);
                         for p in &self.history {
                             if p.target >= 50. {
                                 let x = a.x + (p.time - begin) / span * a.w;
                                 let y = a.y + a.h
                                     - ((p.target as f64 / 55.).log2() / 5.).clamp(0., 1.) * a.h;
+                                if let Some(points) = &mut trace {
+                                    points.push((x, y));
+                                }
                                 if first {
                                     c.move_to(x, y);
                                     first = false;
@@ -905,6 +926,9 @@ impl Display {
                             }
                         }
                         c.stroke();
+                        if let Some(points) = trace {
+                            inspection::trace(points.into_iter(), 0, Some("Target"));
+                        }
                         let _ = c.set_line_dash(&Array::new());
                     }
                 }
@@ -987,9 +1011,9 @@ impl Display {
                     5. * self.settings.sensitivity[0],
                 ),
                 y: [
-                    Some(Axis::linear(
-                        (-4. + self.settings.position[1]) * self.settings.sensitivity[1],
-                        (4. + self.settings.position[1]) * self.settings.sensitivity[1],
+                    Some(Axis::waveform(
+                        self.settings.sensitivity[1],
+                        self.settings.position[1],
                     )),
                     None,
                 ],
