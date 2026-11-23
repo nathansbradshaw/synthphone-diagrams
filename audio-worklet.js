@@ -10,6 +10,7 @@ class DspBench extends AudioWorkletProcessor {
       try {
         if (data.reset) { this.api.engine_free(this.engine); this.engine = this.api.engine_new(sampleRate); this.refresh(); }
         if (data.params) { this.input.set(data.params); this.api.engine_configure(this.engine); }
+        if (data.duration !== undefined) this.api.engine_audio_duration(this.engine, data.duration);
         if (data.seek !== undefined) this.api.engine_seek(this.engine, data.seek);
         if (data.midi) {
           const ptr = this.api.midi_alloc(data.midi.length);
@@ -20,7 +21,7 @@ class DspBench extends AudioWorkletProcessor {
         if (data.view !== undefined) {
           const ptr = this.api.engine_analyze(this.engine, data.view);
           this.refresh();
-          this.port.postMessage({snapshot: new Float32Array(this.api.memory.buffer, ptr, 3076)});
+          this.port.postMessage({snapshot: new Float32Array(this.api.memory.buffer, ptr, this.api.engine_snapshot_len()), request: data.request});
         }
       } catch(error) { this.port.postMessage({error: String(error)}); }
     };
