@@ -218,6 +218,10 @@ body{padding:16px 12px 24px}
  .display-column>.measurement-bank{grid-column:1;grid-row:2;flex-direction:row;flex-wrap:wrap;width:100%;max-width:100%}
  .display-utilities{grid-row:3}
 }
+@media(min-width:721px) and (max-width:920px){
+ .controls-column{grid-template-columns:1fr}
+ .scope-controls{grid-template-columns:1fr 1fr}
+}
 @media(max-width:720px){
  .instrument{border-width:56px 28px 60px 18px;padding:6px}
  .nameplate{gap:6px 12px}
