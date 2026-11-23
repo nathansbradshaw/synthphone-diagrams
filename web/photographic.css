@@ -194,6 +194,7 @@ button.inspect-launcher:not(.bnc):not(.power-rocker):not(.flat-button),.instrume
 #inspection-home fieldset{margin:8px 0 0;padding:6px;border-color:#96896c77}
 #inspection-home legend{font-size:10px}
 #inspection-home .inspection-buttons{display:grid;grid-template-columns:repeat(3,76px);gap:5px}
+#inspection-home fieldset:first-child .inspection-buttons{grid-template-columns:repeat(2,76px)}
 #inspection-home button:not(.bnc):not(.power-rocker):not(.flat-button){width:76px;min-height:32px;height:32px;font-size:10px;padding:2px}
 #inspection-home #inspection-readout{font-size:10px;line-height:1.6;margin:8px 0 0}
 #screen-dialog #inspection-home{position:fixed;margin:0;max-height:calc(100dvh - 16px)}

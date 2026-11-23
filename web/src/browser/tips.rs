@@ -10,6 +10,9 @@ fn tip(e: &Element) -> Option<&'static str> {
         "screen-cursors" => {
             "C: show measurement cursors. Tap or drag to place the selected cursor."
         }
+        "screen-snap" => {
+            "N: snap to a visible trace sample or FFT bin. Off gives free coordinates."
+        }
         "cursor-a" => {
             "A: select cursor A. Arrow keys move it on a focused screen; Shift moves finely."
         }

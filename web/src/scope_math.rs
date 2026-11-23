@@ -14,24 +14,6 @@ pub fn trigger_index(samples: &[f32], count: usize, level: f32, rising: bool) ->
             }
         })
 }
-pub fn decimate_extrema(samples: &[f32], pixels: usize) -> Vec<(f32, f32)> {
-    if pixels == 0 || samples.is_empty() {
-        return Vec::new();
-    }
-    let n = pixels.min(samples.len());
-    (0..n)
-        .map(|i| {
-            let a = i * samples.len() / n;
-            let b = ((i + 1) * samples.len() / n).max(a + 1);
-            samples[a..b]
-                .iter()
-                .copied()
-                .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
-                    (lo.min(v), hi.max(v))
-                })
-        })
-        .collect()
-}
 pub fn note_name(hz: f32) -> String {
     if !hz.is_finite() || hz < 20. {
         return "—".into();
@@ -72,14 +54,6 @@ mod tests {
         );
         assert_eq!(trigger_index(&[1., 0.5, -0.5, -1.], 2, 0., false), Some(1));
         assert_eq!(trigger_index(&[0.; 4], 5, 0., true), None);
-    }
-    #[test]
-    fn decimation_preserves_short_transients() {
-        let mut s = vec![0.; 1000];
-        s[407] = 0.95;
-        s[408] = -0.8;
-        let e = decimate_extrema(&s, 100);
-        assert!(e.iter().any(|x| x.1 == 0.95 && x.0 == -0.8));
     }
     #[test]
     fn concert_pitch_and_staff_steps() {
