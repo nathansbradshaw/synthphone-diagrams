@@ -1,5 +1,7 @@
 use std::{
+    collections::hash_map::DefaultHasher,
     env, fs,
+    hash::{Hash, Hasher},
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
@@ -25,6 +27,22 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+fn copy_assets(from: &Path, to: &Path, hash: &mut DefaultHasher) -> Result<(), String> {
+    fs::create_dir_all(to).map_err(|e| e.to_string())?;
+    let mut entries = fs::read_dir(from)
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    entries.sort_by_key(|e| e.file_name());
+    for entry in entries {
+        if entry.path().extension().is_some_and(|e| e == "webp") {
+            let bytes = fs::read(entry.path()).map_err(|e| e.to_string())?;
+            bytes.hash(hash);
+            fs::write(to.join(entry.file_name()), bytes).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
 }
 fn execute() -> Result<(), String> {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -75,11 +93,52 @@ fn execute() -> Result<(), String> {
                 ],
                 &root,
             )?;
-            for name in ["index.html", "instrument.css", "audio-worklet.js"] {
+            for name in [
+                "index.html",
+                "instrument.css",
+                "photographic.css",
+                "audio-worklet.js",
+            ] {
                 fs::copy(root.join(name), root.join("dist").join(name))
                     .map_err(|e| e.to_string())?;
             }
             fs::write(root.join("dist/.nojekyll"), "").map_err(|e| e.to_string())?;
+            let mut hash = DefaultHasher::new();
+            copy_assets(&root.join("assets"), &root.join("dist/assets"), &mut hash)?;
+            for name in [
+                "index.html",
+                "instrument.css",
+                "photographic.css",
+                "audio-worklet.js",
+                "engine.wasm",
+                "pkg/dsp_viewer_web.js",
+                "pkg/dsp_viewer_web_bg.wasm",
+            ] {
+                fs::read(root.join("dist").join(name))
+                    .map_err(|e| e.to_string())?
+                    .hash(&mut hash);
+            }
+            let build = format!("{:016x}", hash.finish());
+            let html =
+                fs::read_to_string(root.join("dist/index.html")).map_err(|e| e.to_string())?;
+            fs::write(
+                root.join("dist/index.html"),
+                html.replace("__BUILD__", &build),
+            )
+            .map_err(|e| e.to_string())?;
+            let revision = Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(&root)
+                .output()
+                .map_err(|e| e.to_string())?;
+            let revision = String::from_utf8_lossy(&revision.stdout).trim().to_string();
+            let dirty = !Command::new("git")
+                .args(["diff", "--quiet", "HEAD", "--", "."])
+                .current_dir(&root)
+                .status()
+                .map_err(|e| e.to_string())?
+                .success();
+            fs::write(root.join("dist/version.json"), format!("{{\"source_commit\":\"{revision}\",\"build\":\"{build}\",\"dirty_source\":{dirty}}}\n")).map_err(|e|e.to_string())?;
             println!("Built {}", root.join("dist").display());
             Ok(())
         }
@@ -121,6 +180,7 @@ fn execute() -> Result<(), String> {
                     "css" => "text/css",
                     "js" => "text/javascript",
                     "wasm" => "application/wasm",
+                    "webp" => "image/webp",
                     _ => "application/octet-stream",
                 };
                 let (status, body) = match body {
