@@ -7,6 +7,8 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
+#[path = "../../src/control_markup.rs"]
+mod control_markup;
 fn run(command: &str, args: &[&str], root: &Path) -> Result<(), String> {
     let status = Command::new(command)
         .args(args)
@@ -76,6 +78,18 @@ fn optimize_wasm(path: &Path, root: &Path) -> Result<(), String> {
     )?;
     fs::rename(output, path).map_err(|e| e.to_string())
 }
+fn prepare_document(template: &str, base_css: &str, photo_css: &str) -> Result<String, String> {
+    let mut html = control_markup::build::render(template)?;
+    html = html.replace("__INSPECTION_HTML__", include_str!("../../inspection.html"));
+    for (token, css) in [("__BASE_CSS__", base_css), ("__PHOTO_CSS__", photo_css)] {
+        let link = format!("<link rel=\"stylesheet\" href=\"{token}\">");
+        if !html.contains(&link) {
+            return Err(format!("Missing stylesheet slot: {token}"));
+        }
+        html = html.replace(&link, &format!("<style>{css}</style>"));
+    }
+    Ok(html)
+}
 
 #[cfg(test)]
 mod tests {
@@ -95,6 +109,21 @@ mod tests {
         assert_eq!(fs::read(dir.join(wasm)).unwrap(), b"same module");
         assert!(!dir.join("ui.wasm").exists());
         fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn first_document_has_styles_controls_and_inspection() {
+        let html = prepare_document(
+            include_str!("../../index.html"),
+            include_str!("../../instrument.css"),
+            include_str!("../../photographic.css"),
+        )
+        .unwrap();
+        assert!(!html.contains("rel=\"stylesheet\""));
+        assert!(!html.contains("__INSPECTION_HTML__"));
+        assert!(html.contains("id=\"inspection-home\""));
+        assert!(html.contains("id=\"fine-a\""));
+        assert!(html.contains("id=\"inspect-screen-0\""));
+        assert_eq!(html.matches("<style>").count(), 2);
     }
 }
 fn execute() -> Result<(), String> {
@@ -126,11 +155,15 @@ fn execute() -> Result<(), String> {
             run(
                 "cargo",
                 &[
-                    "build",
+                    "rustc",
                     "--locked",
                     "--release",
+                    "--lib",
                     "--target",
                     "wasm32-unknown-unknown",
+                    "--",
+                    "-C",
+                    "opt-level=z",
                 ],
                 &root,
             )?;
@@ -173,14 +206,21 @@ fn execute() -> Result<(), String> {
                     .map_err(|e| e.to_string())?
                     .hash(&mut hash);
             }
-            let build = format!("{:016x}", hash.finish());
-            let mut html =
+            let template =
                 fs::read_to_string(root.join("dist/index.html")).map_err(|e| e.to_string())?;
+            let base_css =
+                fs::read_to_string(root.join("instrument.css")).map_err(|e| e.to_string())?;
+            let photo_css =
+                fs::read_to_string(root.join("photographic.css")).map_err(|e| e.to_string())?;
+            let mut html = prepare_document(&template, &base_css, &photo_css)?;
+            for name in ["instrument.css", "photographic.css"] {
+                fs::remove_file(root.join("dist").join(name)).map_err(|e| e.to_string())?;
+            }
+            html.hash(&mut hash);
+            let build = format!("{:016x}", hash.finish());
             for (token, name) in [
                 ("__UI_JS__", "pkg/dsp_viewer_web.js"),
                 ("__UI_WASM__", "pkg/dsp_viewer_web_bg.wasm"),
-                ("__BASE_CSS__", "instrument.css"),
-                ("__PHOTO_CSS__", "photographic.css"),
                 ("__ENGINE__", "engine.wasm"),
                 ("__WORKLET__", "audio-worklet.js"),
             ] {

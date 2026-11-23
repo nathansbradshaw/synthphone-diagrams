@@ -329,7 +329,6 @@ impl Display {
         frozen: bool,
         midi: Option<&crate::midi::Timeline>,
     ) -> bool {
-        inspection::start(0);
         let c = ctx(&canvas("scope"));
         let g = ctx(&canvas("grid"));
         let r = Area {
@@ -365,6 +364,11 @@ impl Display {
             && view == 0
             && self.settings.trigger_mode != 0
             && wave_edge(s, &self.settings, sr).is_none();
+        if waiting && !changed {
+            inspection::keep_capture(0);
+        } else {
+            inspection::start(0);
+        }
         if waiting {
             // Keep the actual previous acquisition while Normal/Single wait.
         } else if view != 0

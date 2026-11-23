@@ -28,7 +28,9 @@ button.selected:after{position:absolute;left:calc(50% - 8px);bottom:3px;width:16
 .fine-mark{font-size:5px;color:#373b2e}
 .knob-label,legend,.knob-value,.knob-scale text{color:#343b2e;fill:#343b2e}
 .knob-scale line{stroke:#343b2e}
+.knob-scale use{stroke:#343b2e;stroke-width:.65}
 .knob-mount:has(input:disabled){opacity:.57}
+html:not([data-controls-ready-ms]) .knob-mount:has(input:disabled){opacity:1}
 fieldset,.crt-adjustments{border:1px solid #5c65555c;box-shadow:none;border-radius:6px}
 .coupling label{background-size:140% 140%;box-shadow:0 1px 1px #29271e80}
 .processor-selectors select{border:1px solid #72735d;background:#d4cdb5;box-shadow:inset 1px 1px 2px #655b4066;color:#2f382d}
@@ -164,6 +166,8 @@ fieldset,.crt-adjustments{border:1px solid #5c65555c;box-shadow:none;border-radi
 #capture-status{display:block;font:11px Arial;min-height:0}
 #capture-status:empty{display:none}
 #scope,.aux-hood canvas{cursor:zoom-in;pointer-events:auto}
+.screen-surface{position:relative;width:100%;height:100%;border-radius:8%;overflow:hidden}
+.crt-glass>.cursor-overlay,.aux-hood .cursor-overlay{position:absolute;inset:0;display:block;width:100%;height:100%;background:transparent;filter:none;pointer-events:none;border-radius:inherit}
 html[data-cursors=true] #scope,html[data-cursors=true] .aux-hood canvas{cursor:crosshair;touch-action:none}
 #scope:focus-visible,.aux-hood canvas:focus-visible{outline:2px solid #d2c29b;outline-offset:3px}
 #screen-dialog{border-image:none;border:1px solid #877e65;border-radius:6px;background:#c9bfa0;padding:10px;width:min(1200px,96vw);max-width:96vw;max-height:96dvh;overflow:auto;filter:none;color:#29382d;box-shadow:0 12px 50px #0009}
