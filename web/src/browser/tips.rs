@@ -3,6 +3,26 @@ use super::*;
 fn tip(e: &Element) -> Option<&'static str> {
     let id = e.id();
     let specific = match id.as_str() {
+        "inspect-screen-0" | "inspect-screen-1" | "inspect-screen-2" | "inspect-screen-3" => {
+            "I: open this screen’s measurement and capture tools."
+        }
+        "inspection-close" => "Escape: close the screen tools. Shortcuts still work.",
+        "screen-cursors" => {
+            "C: show measurement cursors. Tap or drag to place the selected cursor."
+        }
+        "cursor-a" => {
+            "A: select cursor A. Arrow keys move it on a focused screen; Shift moves finely."
+        }
+        "cursor-b" => "B: select cursor B. Δ shows the difference from A.",
+        "screen-zoom-in" => "+: zoom in around the pointer. Uses the captured data.",
+        "screen-zoom-out" => "−: zoom out. Does not change the audio.",
+        "screen-left" => "[: pan left through the captured window.",
+        "screen-right" => "]: pan right through the captured window.",
+        "screen-fit" => "F: reset zoom. Fit waveform height to the captured signal.",
+        "screen-enlarge" => "E: enlarge the selected screen. Escape restores it.",
+        "screen-restore" => "Escape: return the screen to its panel.",
+        "screen-hold" => "H or Space: freeze every screen. Audio keeps running.",
+        "screen-save" => "S: download all screens, cursor readings and settings as a PNG.",
         "power" => "Start or stop audio. Listening stays muted until enabled.",
         "strength" => "Pull your pitch toward the selected scale.",
         "harmony-strength" => "Pull harmony voices toward the MIDI chord.",

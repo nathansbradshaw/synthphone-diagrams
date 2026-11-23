@@ -1,5 +1,7 @@
+use super::inspection::{self, FREQUENCY, INPUT, PERIOD, Plot, TIME};
 use super::*;
 use crate::engine::*;
+use crate::inspection_math::Axis;
 use crate::scope_math::{decimate_extrema, midi_staff_step, note_name, trigger_index};
 #[derive(Clone)]
 pub(super) struct Settings {
@@ -94,11 +96,11 @@ struct Pitch {
     target: f32,
 }
 #[derive(Clone, Copy)]
-struct Area {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+pub(super) struct Area {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
 }
 pub(super) struct Display {
     pub settings: Settings,
@@ -203,6 +205,7 @@ impl Display {
             h: 300.,
         };
         for i in 0..3 {
+            inspection::start(i + 1);
             let c = ctx(&canvas(&format!("aux-{i}")));
             c.clear_rect(0., 0., 600., 400.);
             c.set_font("26px monospace");
@@ -213,13 +216,14 @@ impl Display {
             }
             match value(&format!("aux-view-{i}")) as u8 {
                 1 => self.spectrum(&c, r, s, sr, true),
-                2 => self.spectrograms(&c, r),
+                2 => self.spectrograms(&c, r, sr),
                 3 => self.pitch(&c, r),
                 4 => self.envelopes(&c, r, s, sr),
                 5 => draw_midi(&c, r, midi, s[META + 10] as f64, s[META + 6]),
                 7 => self.cepstrum(&c, r, s, sr),
                 _ => self.xy(&c, r, s),
             }
+            inspection::finish(&c);
         }
     }
     pub fn reset(&mut self) {
@@ -230,6 +234,7 @@ impl Display {
         self.clear_history();
     }
     pub fn clear_history(&mut self) {
+        inspection::reset_capture();
         self.history.clear();
         self.waterfalls = None;
         self.times.clear();
@@ -324,6 +329,7 @@ impl Display {
         frozen: bool,
         midi: Option<&crate::midi::Timeline>,
     ) -> bool {
+        inspection::start(0);
         let c = ctx(&canvas("scope"));
         let g = ctx(&canvas("grid"));
         let r = Area {
@@ -458,7 +464,7 @@ impl Display {
                     captured = self.wave(&c, r, s, sr, playing, frozen || !playing);
                 }
                 1 => self.spectrum(&c, r, s, sr, true),
-                2 => self.spectrograms(&c, r),
+                2 => self.spectrograms(&c, r, sr),
                 3 => self.pitch(&c, r),
                 4 => self.envelopes(&c, r, s, sr),
                 5 => draw_midi(&c, r, midi, s[META + 10] as f64, s[META + 6]),
@@ -480,7 +486,77 @@ impl Display {
             label(&c, "POWER ON TO ACQUIRE", 320., 396.);
         }
         self.fresh = false;
+        if live {
+            inspection::finish(&c);
+        }
         captured
+    }
+    fn wave_plot(&self, r: Area, s: &[f32; SNAPSHOT_LEN], sr: f32, channel: Option<usize>) -> Plot {
+        let count = (self.settings.time * 10. * sr as f64 / 1000.)
+            .round()
+            .clamp(2., 1024.) as usize;
+        let start = wave_edge(s, &self.settings, sr).unwrap_or(WAVE - count);
+        let end = s[META + 10] as f64;
+        let x = Axis::linear(
+            end - (WAVE - start) as f64 / sr as f64,
+            end - (WAVE - start - count + usize::from(channel.is_some())) as f64 / sr as f64,
+        );
+        let axis = |ch: usize| {
+            Axis::linear(
+                (-4. + self.settings.position[ch]) * self.settings.sensitivity[ch],
+                (4. + self.settings.position[ch]) * self.settings.sensitivity[ch],
+            )
+        };
+        let y = if let Some(ch) = channel {
+            [Some(axis(ch)), None]
+        } else {
+            [Some(axis(0)), Some(axis(1))]
+        };
+        Plot {
+            area: r,
+            domain: TIME,
+            x,
+            y,
+            unit: "FS",
+        }
+    }
+    fn frequency_plot(r: Area, sr: f32) -> Plot {
+        Plot {
+            area: r,
+            domain: FREQUENCY,
+            x: Axis::logarithmic(20., sr as f64 / 2.),
+            y: [Some(Axis::linear(-90., 0.)), None],
+            unit: "dBFS",
+        }
+    }
+    fn history_plot(&self, r: Area, spectrogram: bool, sr: f32) -> Plot {
+        let (start, end) = if spectrogram {
+            let end = self.times.back().copied().unwrap_or(0.);
+            (self.times.front().copied().unwrap_or(end), end)
+        } else {
+            (
+                self.history.front().map(|p| p.time).unwrap_or(0.),
+                self.history
+                    .back()
+                    .map(|p| p.time)
+                    .unwrap_or(0.05)
+                    .max(self.history.front().map(|p| p.time).unwrap_or(0.) + 0.05),
+            )
+        };
+        Plot {
+            area: r,
+            domain: TIME,
+            x: Axis::linear(start, end.max(start + 0.00001)),
+            y: [
+                Some(if spectrogram {
+                    Axis::logarithmic(20., sr as f64 / 2.)
+                } else {
+                    Axis::logarithmic(55., 1760.)
+                }),
+                None,
+            ],
+            unit: "Hz",
+        }
     }
     fn wave(
         &self,
@@ -518,6 +594,7 @@ impl Display {
         c.begin_path();
         c.rect(r.x, r.y, r.w, r.h);
         c.clip();
+        inspection::begin(c, self.wave_plot(r, s, sr, None));
         for channel in 0..2 {
             if !self.settings.shown[channel] {
                 continue;
@@ -552,6 +629,7 @@ impl Display {
             }
             c.stroke();
         }
+        inspection::end(c);
         c.restore();
         self.settings.trigger_mode == 2 && triggered && playing && !frozen && self.fresh
     }
@@ -563,32 +641,18 @@ impl Display {
         sr: f32,
         envelopes: bool,
     ) {
+        inspection::begin(c, Self::frequency_plot(r, sr));
         for (ch, offset) in [FFT_A, FFT_B].into_iter().enumerate() {
             if self.settings.shown[ch] {
                 spectrum_line(c, r, &s[offset..offset + 512], sr, ch);
             }
         }
+        inspection::end(c);
         if envelopes {
             self.envelopes(c, r, s, sr);
         }
         c.set_shadow_blur(0.);
-        for hz in [20., 100., 1000., 10000.] {
-            label(
-                c,
-                &format!(
-                    "{}",
-                    if hz < 1000. {
-                        format!("{hz:.0} Hz")
-                    } else {
-                        format!("{:.0}k", hz / 1000.)
-                    }
-                ),
-                r.x + (hz / 20f64).ln() / ((sr as f64 / 2.) / 20.).ln() * r.w,
-                r.y + r.h + 24.,
-            );
-        }
-        label(c, "0 dBFS", r.x + 5., r.y + 18.);
-        label(c, "−90 dBFS", r.x + 5., r.y + r.h - 7.);
+        inspection::begin(c, Self::frequency_plot(r, sr));
         let pitch = s[META];
         if pitch > 20. {
             c.set_stroke_style_str("#8cbf9a");
@@ -600,8 +664,10 @@ impl Display {
                 }
             }
         }
+        inspection::end(c);
     }
     fn envelopes(&self, c: &CanvasRenderingContext2d, r: Area, s: &[f32; SNAPSHOT_LEN], sr: f32) {
+        inspection::begin(c, Self::frequency_plot(r, sr));
         for (i, offset) in [ENV_A, ENV_IDEAL, ENV_B].into_iter().enumerate() {
             if self.settings.envelopes[i] {
                 c.set_shadow_blur(0.);
@@ -632,9 +698,10 @@ impl Display {
             }
         }
         let _ = c.set_line_dash(&Array::new());
+        inspection::end(c);
         label(c, "Original / Ideal / Measured", r.x, r.y - 12.);
     }
-    fn spectrograms(&self, c: &CanvasRenderingContext2d, r: Area) {
+    fn spectrograms(&self, c: &CanvasRenderingContext2d, r: Area, sr: f32) {
         for ch in 0..2 {
             let area = Area {
                 x: r.x,
@@ -643,9 +710,21 @@ impl Display {
                 h: r.h / 2. - 22.,
             };
             if let Some(w) = &self.waterfalls {
-                let _ = c.draw_image_with_html_canvas_element_and_dw_and_dh(
-                    &w[ch], area.x, area.y, area.w, area.h,
-                );
+                let view = inspection::raster(self.history_plot(area, true, sr));
+                // Crop from the stored history, never from a resampled screen.
+                let _ = c
+                    .draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(
+                        &w[ch],
+                        512. - self.times.len() as f64
+                            + view.start() * self.times.len().saturating_sub(1) as f64,
+                        0.,
+                        self.times.len().saturating_sub(1).max(1) as f64 / view.zoom,
+                        128.,
+                        area.x,
+                        area.y,
+                        area.w,
+                        area.h,
+                    );
             }
             label(
                 c,
@@ -654,16 +733,6 @@ impl Display {
                 area.y + 20.,
             );
         }
-        let duration = match (self.times.front(), self.times.back()) {
-            (Some(a), Some(b)) => b - a,
-            _ => 0.,
-        };
-        label(
-            c,
-            &format!("{duration:.1} s · log Hz"),
-            r.x,
-            r.y + r.h + 22.,
-        );
     }
     fn pitch(&self, c: &CanvasRenderingContext2d, r: Area) {
         let end = self.history.back().map(|p| p.time).unwrap_or(0.);
@@ -680,6 +749,7 @@ impl Display {
                 y - 6.,
             );
         }
+        inspection::begin(c, self.history_plot(r, false, 48000.));
         for ch in 0..2 {
             if !self.settings.shown[ch] {
                 continue;
@@ -716,12 +786,7 @@ impl Display {
         }
         c.stroke();
         let _ = c.set_line_dash(&Array::new());
-        label(
-            c,
-            &format!("{span:.1} s · dashed MIDI target when active"),
-            r.x,
-            r.y + r.h + 23.,
-        );
+        inspection::end(c);
     }
     fn compare(&self, c: &CanvasRenderingContext2d, r: Area, s: &[f32; SNAPSHOT_LEN], sr: f32) {
         let col = (r.w - 28.) / 2.;
@@ -739,6 +804,14 @@ impl Display {
                 lattice(c, a, 5, 2);
                 if !self.settings.shown[ch] {
                     continue;
+                }
+                if row != 2 {
+                    let plot = match row {
+                        0 => self.wave_plot(a, s, sr, Some(ch)),
+                        1 => Self::frequency_plot(a, sr),
+                        _ => self.history_plot(a, false, sr),
+                    };
+                    inspection::begin(c, plot);
                 }
                 match row {
                     0 => {
@@ -787,9 +860,8 @@ impl Display {
                     ),
                     2 => {
                         if let Some(w) = &self.waterfalls {
-                            let _ = c.draw_image_with_html_canvas_element_and_dw_and_dh(
-                                &w[ch], a.x, a.y, a.w, a.h,
-                            );
+                            let view = inspection::raster(self.history_plot(a, true, sr));
+                            let _=c.draw_image_with_html_canvas_element_and_sw_and_sh_and_dx_and_dy_and_dw_and_dh(&w[ch],512.-self.times.len() as f64+view.start()*self.times.len().saturating_sub(1) as f64,0.,self.times.len().saturating_sub(1).max(1) as f64/view.zoom,128.,a.x,a.y,a.w,a.h);
                         }
                     }
                     _ => {
@@ -832,6 +904,9 @@ impl Display {
                         let _ = c.set_line_dash(&Array::new());
                     }
                 }
+                if row != 2 {
+                    inspection::end(c);
+                }
                 label(
                     c,
                     [
@@ -853,6 +928,19 @@ impl Display {
             .chain(s[CEP_B + 1..CEP_B + samples].iter())
             .map(|x| x.abs())
             .fold(0.001, f32::max) as f64;
+        inspection::begin(
+            c,
+            Plot {
+                area: r,
+                domain: PERIOD,
+                x: Axis::linear(0., samples as f64 / sr as f64),
+                y: [
+                    Some(Axis::linear(-0.35 / 0.55 * max, 0.65 / 0.55 * max)),
+                    None,
+                ],
+                unit: "cep",
+            },
+        );
         for (ch, offset) in [CEP_A, CEP_B].into_iter().enumerate() {
             if self.settings.shown[ch] {
                 stroke(
@@ -867,12 +955,7 @@ impl Display {
                 );
             }
         }
-        for ms in [0., 2., 5., 10.] {
-            let x = r.x + ms / (samples as f64 / sr as f64 * 1000.) * r.w;
-            if x <= r.x + r.w {
-                label(c, &format!("{ms:.0} ms"), x, r.y + r.h + 22.);
-            }
-        }
+        inspection::end(c);
         label(c, "Real cepstrum · quefrency", r.x + 5., r.y + 22.);
     }
     fn xy(&self, c: &CanvasRenderingContext2d, r: Area, s: &[f32; SNAPSHOT_LEN]) {
@@ -890,6 +973,25 @@ impl Display {
         c.begin_path();
         c.rect(r.x, r.y, r.w, r.h);
         c.clip();
+        inspection::begin(
+            c,
+            Plot {
+                area: r,
+                domain: INPUT,
+                x: Axis::linear(
+                    -5. * self.settings.sensitivity[0],
+                    5. * self.settings.sensitivity[0],
+                ),
+                y: [
+                    Some(Axis::linear(
+                        (-4. + self.settings.position[1]) * self.settings.sensitivity[1],
+                        (4. + self.settings.position[1]) * self.settings.sensitivity[1],
+                    )),
+                    None,
+                ],
+                unit: "FS",
+            },
+        );
         stroke(
             c,
             (0..WAVE).step_by(2).map(|i| {
@@ -913,8 +1015,9 @@ impl Display {
             }),
             0,
         );
+        inspection::end(c);
         c.restore();
-        label(c, "X: input · Y: output", r.x + 5., r.y + r.h + 22.);
+        label(c, "X: input · Y: output", r.x + 5., r.y + 22.);
     }
 }
 fn spectrum_line(c: &CanvasRenderingContext2d, r: Area, m: &[f32], sr: f32, ch: usize) {
@@ -961,6 +1064,21 @@ fn draw_midi(
     }
     label(c, "G", r.x + 3., treble + 40.);
     label(c, "F", r.x + 3., bass + 40.);
+    inspection::begin(
+        c,
+        Plot {
+            area: Area {
+                x: x0,
+                y: r.y + 35.,
+                w: width,
+                h: r.h - 60.,
+            },
+            domain: TIME,
+            x: Axis::linear(position - time + start, position - time + start + 8.),
+            y: [None, None],
+            unit: "",
+        },
+    );
     let to = m.notes.partition_point(|n| n.start < start + 8.);
     for n in m.notes[..to].iter().filter(|n| n.end >= start).take(2000) {
         let step = midi_staff_step(n.key);
@@ -1014,6 +1132,7 @@ fn draw_midi(
     let playhead = x0 + (time - start) / 8. * width;
     c.set_stroke_style_str("#dbefae");
     line(c, playhead, r.y + 35., playhead, r.y + r.h - 25.);
+    inspection::end(c);
     label(
         c,
         &format!(
@@ -1025,15 +1144,6 @@ fn draw_midi(
         ),
         r.x + 5.,
         r.y + 18.,
-    );
-    label(
-        c,
-        &format!(
-            "{start:.0}–{:.0} s · actual note-on / note-off durations",
-            start + 8.
-        ),
-        r.x + 5.,
-        r.y + r.h + 23.,
     );
 }
 fn compact(v: f64) -> String {
