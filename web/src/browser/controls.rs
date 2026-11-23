@@ -31,6 +31,44 @@ fn name(id: &str, label: &str) -> String {
     }
 }
 pub(super) fn mount() {
+    let switches = doc().query_selector_all(".coupling").unwrap();
+    for n in 0..switches.length() {
+        let group: Element = switches.item(n).unwrap().unchecked_into();
+        for event in ["pointerdown", "pointermove"] {
+            let switch = group.clone();
+            bind(group.as_ref(), event, move |e| {
+                let p: PointerEvent = e.unchecked_into();
+                if p.type_() == "pointerdown" {
+                    let _ = switch.set_pointer_capture(p.pointer_id());
+                } else if !switch.has_pointer_capture(p.pointer_id()) {
+                    return;
+                }
+                p.prevent_default();
+                let bounds = switch.get_bounding_client_rect();
+                let hit = (((p.client_x() as f64 - bounds.left()) / bounds.width()) * 3.)
+                    .floor()
+                    .clamp(0., 2.) as u8;
+                let at = if p.type_() == "pointerdown" {
+                    p.target()
+                        .and_then(|t| t.dyn_into::<HtmlInputElement>().ok())
+                        .and_then(|i| i.value().parse::<u8>().ok())
+                        .unwrap_or(hit)
+                } else {
+                    hit
+                };
+                let selected: HtmlInputElement = switch
+                    .query_selector(&format!("input[value='{at}']"))
+                    .unwrap()
+                    .unwrap()
+                    .unchecked_into();
+                let _ = selected.focus();
+                if !selected.checked() {
+                    selected.set_checked(true);
+                    let _ = selected.dispatch_event(&Event::new("change").unwrap());
+                }
+            });
+        }
+    }
     let mounts = doc().query_selector_all(".knob-mount").unwrap();
     for index in 0..mounts.length() {
         let e: Element = mounts.item(index).unwrap().unchecked_into();
@@ -114,6 +152,20 @@ pub(super) fn sync(id: &str) {
     }
     let v = read(id);
     let label = match id {
+        "key" => [
+            "C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B",
+        ][v as usize % 12]
+            .to_string(),
+        "aux-view-0" | "aux-view-1" | "aux-view-2" => match v as u8 {
+            1 => "Spectrum",
+            2 => "Spectrogram",
+            3 => "Pitch",
+            4 => "Envelopes",
+            5 => "MIDI score",
+            7 => "Cepstrum",
+            _ => "X–Y",
+        }
+        .into(),
         "mix" | "strength" | "harmony-strength" => format!("{:.0}%", v * 100.),
         "frequency" | "test-frequency" => format!("{v:.0} Hz"),
         "shift" | "harmony-shift" | "formant" => format!("{v:+.1} st"),
@@ -236,6 +288,7 @@ fn bind_dial(id: &str) {
 }
 fn changed(id: &str) {
     match id {
+        "aux-view-0" | "aux-view-1" | "aux-view-2" => draw(),
         "vertical" | "vertical-out" | "fine-a" | "fine-b" | "fine-time" | "position-a"
         | "position-b" | "timebase" | "trigger-level" | "intensity" | "focus" | "illumination"
         | "persistence" => {

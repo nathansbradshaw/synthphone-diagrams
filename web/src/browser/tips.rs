@@ -44,7 +44,7 @@ fn tip(e: &Element) -> Option<&'static str> {
         "env-ideal" => "Show the intended envelope after formant shifting.",
         "env-actual" => "Show the envelope measured from actual output.",
         "show-a" | "show-b" => "Show or hide this channel's plotted traces.",
-        "analysis-toggle" => "Show three linked screens. Hold freezes them together.",
+        "analysis-toggle" => "Show or hide the three additional displays.",
         "aux-view-0" | "aux-view-1" | "aux-view-2" => {
             "Choose a measurement for this linked screen."
         }
@@ -95,6 +95,9 @@ fn tip(e: &Element) -> Option<&'static str> {
     }
     if e.has_attribute("data-carrier") {
         return Some("Choose the vocoder carrier's waveform and tone.");
+    }
+    if e.has_attribute("data-scale") {
+        return Some("Choose a major or minor scale for pitch correction.");
     }
     if e.get_attribute("name")
         .is_some_and(|n| n.starts_with("coupling-"))

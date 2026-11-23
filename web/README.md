@@ -4,10 +4,10 @@
 
 1. **Power** starts the test oscillator. **Listen** enables sound.
 2. **Compare** shows eight input/output measurements together.
-3. The **linked analysis bay** adds three selectable screens. **Hold** freezes every screen together while audio continues.
+3. Three additional screens sit in a separate unit at the top. Turn each **VIEW** selector to choose its measurement. **DISPLAYS** shows or hides the unit; **Hold** freezes all screens while audio continues.
 4. Load local **audio** and **MIDI**, then choose a processor. Hover or focus a control for one short tip.
 
-Drag knobs around their center or vertically. Arrow keys adjust them; Shift slows dragging; double-click resets. The smaller concentric **VAR** controls make fine scale adjustments. Use headphones when listening to a microphone.
+Drag knobs around their center or vertically. Arrow keys adjust them; Shift slows dragging; double-click resets. The smaller concentric **VAR** controls make fine scale adjustments. Coupling switches support clicking, dragging and arrow keys. Key and display selection use rotary controls; Major/Minor use buttons. Use headphones when listening to a microphone.
 
 Audio and MIDI stay in your browser. No account, upload, telemetry or remote processing is involved. The desktop application remains in `src/`.
 
@@ -49,7 +49,7 @@ Build locally, commit source to `main`, then copy `dist/` to the existing `gh-pa
 
 - Rust owns controls, plotting, MIDI parsing, DSP and the build/server. A minimal browser-required JavaScript AudioWorklet bridge copies PCM to an import-free Rust WASM module.
 - Audio processing uses preallocated fixed arrays and cached WASM views. The 128-sample callback does not allocate. STFT uses 1024 samples with a 256-sample hop.
-- Audio remains continuous while displays update at 20 Hz in Eco or 40 Hz normally. Only analyses needed by visible screens run; at most one snapshot is outstanding. Hold, pause, hidden pages and power-off stop analysis requests. Close the analysis bay to avoid its extra work.
+- Audio remains continuous while displays update at 20 Hz in Eco or 40 Hz normally. Only analyses needed by visible screens run; at most one snapshot is outstanding. Hold, pause, hidden pages and power-off stop analysis requests. Hide the additional displays to avoid their extra work.
 - Spectrograms scroll one column at a time in two 512×128 offscreen canvases. Pitch and timestamp histories cap at 512 readings. Canvas resolution is fixed independently of screen density.
 - MIDI tempo maps, chord states and target notes are prepared on the UI thread, then installed in the audio module as a compact timeline. Score rendering caps visible notes at 2,000. No MIDI parsing occurs per audio hop.
 - Local audio is limited to 512 MB and MIDI to 8 MB; there is no ten-minute cutoff. Decoded audio can use more memory than its compressed file. Loading or replacing a large timeline can briefly interrupt audio.
